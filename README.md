@@ -1,14 +1,15 @@
 # HyeAero.AI — Aircraft Research & Valuation Consultant (Frontend)
 
-Interactive **Research Dashboard** for [HyeAero.com/research](https://www.hye.aero/): Ask the Consultant (AI chat), Market Comparison, Price Estimator, Resale Advisory. Built with Next.js and Tailwind.
+Interactive **Research Dashboard** for [HyeAero.com/research](https://www.hye.aero/). Built with Next.js and Tailwind, it provides AI-assisted analysis plus a PhlyData aircraft explorer with ZoomInfo-enriched owner details.
 
 ## Features
 
-- **Ask Consultant** — RAG-powered chat over Hye Aero’s sale history and market data (authenticated users). Export chat to PDF.
-- **Market Comparison** — Compare aircraft by model, region, hours; side-by-side table from backend.
-- **Price Estimator** — Predictive valuation and time-to-sale from backend (historical sales).
-- **Resale Advisory** — Plain-English resale guidance from backend (RAG).
-- Tab-based navigation; Sign in / Sign out (demo state; wire to real auth later).
+- **Ask Consultant** — RAG-powered chat over Hye Aero’s sale history and market data (authenticated users). Export conversations to PDF.
+- **Price Estimator** — Predictive valuation and time-to-sale, driven by backend sale history and models.
+- **Resale Advisory** — Plain-English resale guidance and talking points for owners and brokers.
+- **PhlyData Aircraft** — Paginated aircraft list (searchable by serial, registration, model, etc.) with a slide-over **Owner details** panel combining listings, FAA registry, and ZoomInfo company enrichment (website, phones, address, revenue, employees, industries, social URLs, etc.).
+- **Tabs & layout** — Desktop dashboard with tabbed navigation and mobile bottom nav. Sign in / Sign out is a demo-only state switch; hook into real auth in production.
+- **(Hidden UI) Market Comparison** — The backend and internal tab logic still support Market Comparison, but the tab is intentionally hidden from the navigation. You can re-enable it later without changing the API.
 
 ## Setup (local)
 
