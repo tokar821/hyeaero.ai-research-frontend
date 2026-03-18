@@ -480,10 +480,10 @@ export default function DashboardCenterContent(props: DashboardCenterContentProp
 
   if (activeTab === "estimator") {
     return (
-      <div className="flex-1 min-h-0 overflow-y-auto p-6 scrollbar-ui bg-white dark:bg-slate-900">
-        <div className="max-w-4xl mx-auto rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 shadow-sm overflow-hidden transition-colors duration-200">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-0">
-            <div className="p-6 border-b lg:border-b-0 lg:border-r border-slate-200 dark:border-slate-600">
+      <div className="flex-1 min-h-0 overflow-y-auto lg:overflow-hidden p-6 scrollbar-ui bg-white dark:bg-slate-900">
+        <div className="max-w-4xl mx-auto rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 shadow-sm overflow-hidden transition-colors duration-200 lg:h-[calc(100vh-8rem)] lg:min-h-0">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-0 lg:h-full">
+            <div className="p-6 border-b lg:border-b-0 lg:border-r border-slate-200 dark:border-slate-600 lg:overflow-hidden">
               <h2 className="font-heading text-xl font-semibold text-slate-900 dark:text-slate-100">AI Price Estimator</h2>
               <p className="text-slate-500 dark:text-slate-400 text-sm mt-1">Get accurate valuations based on real-time market data.</p>
               <div className="mt-6 space-y-4">
@@ -531,8 +531,9 @@ export default function DashboardCenterContent(props: DashboardCenterContentProp
                 </button>
               </div>
             </div>
-            <div className="p-6 bg-slate-50/50 dark:bg-slate-800/80">
-              <h3 className="font-heading font-semibold text-slate-900 dark:text-slate-100">Valuation Results</h3>
+            <div className="p-6 bg-slate-50/50 dark:bg-slate-800/80 flex flex-col min-h-0">
+              <h3 className="font-heading font-semibold text-slate-900 dark:text-slate-100 flex-shrink-0">Valuation Results</h3>
+              <div className="flex-1 min-h-0 overflow-y-auto pr-2 scrollbar-ui">
               {priceLoading ? (
                 <div className="mt-6 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 p-8 flex items-center justify-center gap-2">
                   <Loader2 className="w-5 h-5 animate-spin text-accent" />
@@ -674,6 +675,7 @@ export default function DashboardCenterContent(props: DashboardCenterContentProp
                   Enter aircraft details and click &quot;Calculate Estimated Value&quot; for a valuation.
                 </div>
               )}
+              </div>
             </div>
           </div>
         </div>
@@ -932,6 +934,17 @@ export default function DashboardCenterContent(props: DashboardCenterContentProp
                 <p className="text-sm text-slate-500 dark:text-slate-400">{phlydataOwnerDetail.message}</p>
               ) : phlydataOwnerDetail?.aircraft ? (
                 <>
+                  <section>
+                    <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2 flex items-center gap-2">
+                      <Database className="w-4 h-4" /> Aircraft
+                    </h4>
+                    <div className="rounded-lg bg-slate-50 dark:bg-slate-800/80 p-3 text-sm space-y-1">
+                      <p><span className="text-slate-500 dark:text-slate-400">Serial:</span> {phlydataOwnerDetail.aircraft.serial_number ?? "—"}</p>
+                      <p><span className="text-slate-500 dark:text-slate-400">Registration:</span> {phlydataOwnerDetail.aircraft.registration_number ?? "—"}</p>
+                      <p><span className="text-slate-500 dark:text-slate-400">Make/Model:</span> {[phlydataOwnerDetail.aircraft.manufacturer, phlydataOwnerDetail.aircraft.model].filter(Boolean).join(" ") || "—"}</p>
+                      <p><span className="text-slate-500 dark:text-slate-400">Year:</span> {phlydataOwnerDetail.aircraft.manufacturer_year ?? phlydataOwnerDetail.aircraft.delivery_year ?? "—"}</p>
+                    </div>
+                  </section>
                   {(phlydataOwnerDetail.zoominfo_enrichment?.length ?? 0) >= 0 && (
                     <section>
                       <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2 flex items-center gap-2">
@@ -1070,17 +1083,6 @@ export default function DashboardCenterContent(props: DashboardCenterContentProp
                       )}
                     </section>
                   )}
-                  <section>
-                    <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2 flex items-center gap-2">
-                      <Database className="w-4 h-4" /> Aircraft
-                    </h4>
-                    <div className="rounded-lg bg-slate-50 dark:bg-slate-800/80 p-3 text-sm space-y-1">
-                      <p><span className="text-slate-500 dark:text-slate-400">Serial:</span> {phlydataOwnerDetail.aircraft.serial_number ?? "—"}</p>
-                      <p><span className="text-slate-500 dark:text-slate-400">Registration:</span> {phlydataOwnerDetail.aircraft.registration_number ?? "—"}</p>
-                      <p><span className="text-slate-500 dark:text-slate-400">Make/Model:</span> {[phlydataOwnerDetail.aircraft.manufacturer, phlydataOwnerDetail.aircraft.model].filter(Boolean).join(" ") || "—"}</p>
-                      <p><span className="text-slate-500 dark:text-slate-400">Year:</span> {phlydataOwnerDetail.aircraft.manufacturer_year ?? phlydataOwnerDetail.aircraft.delivery_year ?? "—"}</p>
-                    </div>
-                  </section>
                   {(phlydataOwnerDetail.aircraftpost_fleet?.length ?? 0) > 0 && (
                     <section>
                       <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2 flex items-center gap-2">
