@@ -481,7 +481,7 @@ export default function DashboardCenterContent(props: DashboardCenterContentProp
   if (activeTab === "estimator") {
     return (
       <div className="flex-1 min-h-0 overflow-y-auto lg:overflow-hidden p-6 scrollbar-ui bg-white dark:bg-slate-900">
-        <div className="max-w-4xl mx-auto rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 shadow-sm overflow-hidden transition-colors duration-200 lg:h-[calc(100vh-11.5rem)] lg:min-h-0">
+        <div className="max-w-4xl mx-auto rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 shadow-sm overflow-hidden transition-colors duration-200 lg:h-[calc(100vh-9rem)] lg:min-h-0">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-0 lg:h-full">
             <div className="p-6 border-b lg:border-b-0 lg:border-r border-slate-200 dark:border-slate-600 lg:overflow-hidden">
               <h2 className="font-heading text-xl font-semibold text-slate-900 dark:text-slate-100">AI Price Estimator</h2>
