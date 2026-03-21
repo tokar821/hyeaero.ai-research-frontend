@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { MessageCircle, Bot, Download, Loader2, Database, X, User, Building2, MapPin, Search, ChevronUp, ChevronDown, ChevronLeft, ChevronRight, Info } from "lucide-react";
+import { MessageCircle, Bot, Download, Loader2, Database, X, User, Building2, MapPin, Search, ChevronUp, ChevronDown, ChevronLeft, ChevronRight } from "lucide-react";
 import { jsPDF } from "jspdf";
 import Chat from "./Chat";
 import { postMarketComparison, postPriceEstimate, postResaleAdvisory } from "@/lib/api";
@@ -1148,25 +1148,17 @@ export default function DashboardCenterContent(props: DashboardCenterContentProp
                       ) : (
                         <div
                           role="status"
-                          className="rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50/95 dark:bg-slate-800/60 p-4 border-l-4 border-l-slate-300 dark:border-l-slate-500 shadow-sm"
+                          className="rounded-xl border border-slate-200 dark:border-slate-600 bg-slate-50/95 dark:bg-slate-800/60 p-4 shadow-sm"
                         >
-                          <div className="flex gap-3 items-start">
-                            <div
-                              className="flex-shrink-0 w-10 h-10 rounded-lg bg-slate-200/90 dark:bg-slate-700/60 text-slate-600 dark:text-slate-300 flex items-center justify-center"
-                              aria-hidden
-                            >
-                              <Info className="w-5 h-5" />
-                            </div>
-                            <div className="min-w-0 space-y-2">
-                              <p className="font-semibold text-slate-900 dark:text-slate-100 text-sm">
-                                ZoomInfo profile not found
+                          <div className="flex flex-col items-center justify-center text-center gap-3">
+                            <p className="font-semibold text-slate-900 dark:text-slate-100 text-sm">
+                              ZoomInfo profile not found
+                            </p>
+                            {phlydataOwnerDetail.zoominfo_registrant_type_hint === "person" ? (
+                              <p className="text-xs text-slate-600 dark:text-slate-300 max-w-sm">
+                                Person registrant: ZoomInfo needs admin permission to return email or phone.
                               </p>
-                              {phlydataOwnerDetail.zoominfo_registrant_type_hint === "person" ? (
-                                <p className="text-xs text-slate-600 dark:text-slate-300 pl-2 border-l-2 border-slate-300 dark:border-slate-600">
-                                  Person registrant: ZoomInfo needs admin permission to return email or phone.
-                                </p>
-                              ) : null}
-                            </div>
+                            ) : null}
                           </div>
                         </div>
                       )}
