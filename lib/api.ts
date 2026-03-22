@@ -204,6 +204,25 @@ export type OwnerFromListing = {
   date_sold: string | null;
 };
 
+/** Unverified web search rows (Tavily) when registrant looks trustee-like + address present. */
+export type FaaTavilyWebHints = {
+  query: string | null;
+  disclaimer: string | null;
+  results: Array<{ title: string | null; url: string | null; content: string | null }>;
+  error?: string | null;
+};
+
+/** OpenAI interpretation of Tavily snippets (not verified; may drive ZoomInfo ``faa_tavily_llm_hint``). */
+export type FaaTavilyLlmSynthesis = {
+  operating_company_name?: string | null;
+  website?: string | null;
+  phone?: string | null;
+  confidence?: "high" | "medium" | "low" | "none" | string | null;
+  summary?: string | null;
+  suggested_zoominfo_query?: string | null;
+  error?: string | null;
+};
+
 export type OwnerFromFaa = {
   registrant_name: string | null;
   street: string | null;
@@ -214,6 +233,10 @@ export type OwnerFromFaa = {
   region: string | null;
   county: string | null;
   country: string | null;
+  /** Tavily web results for trustee-like / corporate registrant + mailing address. */
+  tavily_web_hints?: FaaTavilyWebHints | null;
+  /** Optional LLM read of Tavily snippets → suggested operating company (may trigger ZoomInfo). */
+  tavily_llm_synthesis?: FaaTavilyLlmSynthesis | null;
 };
 
 /** AircraftPost owner row (matched by serial + registration + make/model on fleet table). */
@@ -308,8 +331,15 @@ export type PhlydataOwnersResponse = {
   aircraft: PhlydataAircraftRow | null;
   owners_from_listings: OwnerFromListing[];
   owners_from_faa: OwnerFromFaa[];
-  /** Which owner backends returned rows for this request (e.g. faa, aircraftpost). */
+  /** Which owner backends returned rows (PhlyData tab: `faa` / FAA MASTER only; AircraftPost not used). */
   owner_lookup_sources?: ("faa" | "aircraftpost")[];
+  /** How `faa_master` matched (see backend `faa_master_lookup`). */
+  faa_master_match_kind?:
+    | "n_number_serial"
+    | "n_number_only"
+    | "serial_model"
+    | "serial_only"
+    | null;
   /** AircraftPost owner/source rows (serial + tail registration + model). */
   owners_from_aircraftpost?: OwnerFromAircraftpost[];
   /** Owner/company data retrieved from ZoomInfo (primary display). */

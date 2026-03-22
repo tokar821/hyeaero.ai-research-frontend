@@ -5,7 +5,7 @@ import { MessageCircle, Bot, Download, Loader2, Database, X, User, Building2, Ma
 import { jsPDF } from "jspdf";
 import Chat from "./Chat";
 import { postMarketComparison, postPriceEstimate, postResaleAdvisory } from "@/lib/api";
-import type { MarketComparisonResponse, PriceEstimateResponse, ResaleAdvisoryResponse, PhlydataAircraftRow, PhlydataOwnersResponse, OwnerFromListing, OwnerFromFaa, ZoominfoEnrichmentItem, ZoominfoCompany, ZoominfoContact, ZoominfoMatched, ZoominfoMatchMethod, AviacostReference, AircraftpostFleetAircraftRow } from "@/lib/api";
+import type { MarketComparisonResponse, PriceEstimateResponse, ResaleAdvisoryResponse, PhlydataAircraftRow, PhlydataOwnersResponse, OwnerFromListing, OwnerFromFaa, FaaTavilyWebHints, FaaTavilyLlmSynthesis, ZoominfoEnrichmentItem, ZoominfoCompany, ZoominfoContact, ZoominfoMatched, ZoominfoMatchMethod, AviacostReference, AircraftpostFleetAircraftRow } from "@/lib/api";
 
 /** Format FAA mailing address for readable multi-line display in Owner details. */
 function faaAddressLines(o: OwnerFromFaa): { street: string | null; street2: string | null; cityStateZip: string | null; extras: string[] } {
@@ -766,7 +766,7 @@ export default function DashboardCenterContent(props: DashboardCenterContentProp
               </div>
               <div>
                 <h2 className="font-heading font-semibold text-slate-900 dark:text-slate-100">PhlyData Aircraft</h2>
-                <p className="text-xs text-slate-500 dark:text-slate-400">Data from `phlydata_aircraft` (search runs on the server). Click a row for owners from FAA registry and AircraftPost fleet (serial, registration, model), plus ZoomInfo when available.</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400">Data from `phlydata_aircraft`. **Search** matches **serial** and **registration** only. Click a row for **`faa_master`** registrant/address (FAA MASTER) and **ZoomInfo** enrichment from that data — **not** AircraftPost.</p>
               </div>
             </div>
           </div>
@@ -782,7 +782,7 @@ export default function DashboardCenterContent(props: DashboardCenterContentProp
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                 <input
                   type="text"
-                  placeholder="Search serial, registration, make/model, year, category…"
+                  placeholder="Search serial or registration (N-number)…"
                   value={phlydataSearch}
                   onChange={(e) => {
                     setPhlydataSearch?.(e.target.value);
@@ -974,7 +974,24 @@ export default function DashboardCenterContent(props: DashboardCenterContentProp
                       {phlydataOwnerDetail.owner_lookup_sources && phlydataOwnerDetail.owner_lookup_sources.length > 0 ? (
                         <p className="text-xs text-slate-500 dark:text-slate-400 pt-1 border-t border-slate-200 dark:border-slate-600 mt-2">
                           Owner lookup sources:{" "}
-                          {phlydataOwnerDetail.owner_lookup_sources.map((s) => (s === "faa" ? "FAA registry" : s === "aircraftpost" ? "AircraftPost fleet" : s)).join(" · ")}
+                          {phlydataOwnerDetail.owner_lookup_sources.map((s) => (s === "faa" ? "FAA MASTER" : s)).join(" · ")}
+                          {phlydataOwnerDetail.faa_master_match_kind === "n_number_serial" ? (
+                            <span className="block mt-0.5 text-slate-600 dark:text-slate-300">
+                              FAA MASTER match: registration (N-number) + serial
+                            </span>
+                          ) : phlydataOwnerDetail.faa_master_match_kind === "n_number_only" ? (
+                            <span className="block mt-0.5 text-amber-700 dark:text-amber-300">
+                              FAA MASTER match: registration (N-number) only — FAA serial on file did not match PhlyData serial; owner is for this tail.
+                            </span>
+                          ) : phlydataOwnerDetail.faa_master_match_kind === "serial_model" ? (
+                            <span className="block mt-0.5 text-amber-700 dark:text-amber-300">
+                              FAA MASTER match: serial + model code (no registration row, or tail+serial mismatch)
+                            </span>
+                          ) : phlydataOwnerDetail.faa_master_match_kind === "serial_only" ? (
+                            <span className="block mt-0.5 text-amber-700 dark:text-amber-300">
+                              FAA MASTER match: serial only (no model filter)
+                            </span>
+                          ) : null}
                         </p>
                       ) : null}
                     </div>
@@ -997,9 +1014,11 @@ export default function DashboardCenterContent(props: DashboardCenterContentProp
                                 ? "AircraftExchange (dealer_name)"
                                 : item.source_platform === "faa"
                                   ? "FAA (registrant_name)"
-                                  : item.source_platform === "aircraftpost"
-                                    ? "AircraftPost (owner / owner_url)"
-                                    : item.source_platform || "Listing";
+                                  : item.source_platform === "faa_trustee_hint"
+                                    ? "FAA (legacy)"
+                                    : item.source_platform === "faa_tavily_llm_hint"
+                                      ? "FAA (Tavily + AI → company)"
+                                      : item.source_platform || "Listing";
                           const matched: ZoominfoMatched = item.matched || {};
                           const matchMethod: ZoominfoMatchMethod | undefined = item.match_method;
                           const matchMethodLabel = matchMethod === "phone" ? "Phone" : matchMethod === "content_score" ? "Content match" : matchMethod === "llm_fallback" ? "AI (vector+LLM)" : null;
@@ -1036,13 +1055,6 @@ export default function DashboardCenterContent(props: DashboardCenterContentProp
                                   {matched.llm_fallback && <span className="inline-flex items-center gap-1 rounded-md bg-slate-200/80 dark:bg-slate-600/40 px-2 py-0.5 text-xs font-medium text-slate-800 dark:text-slate-200">AI match</span>}
                                   {matched.website && <span className="inline-flex items-center gap-1 rounded-md bg-accent/12 dark:bg-accent/20 px-2 py-0.5 text-xs font-medium text-slate-800 dark:text-slate-100">Website / URL</span>}
                                 </div>
-                                {item.source_platform === "aircraftpost" && item.context_sent && (item.context_sent.owner_url_alignment_source || item.context_sent.owner_url_llm_alignment) ? (
-                                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                                    AircraftPost owner URL vs ZoomInfo:{" "}
-                                    {String(item.context_sent.owner_url_alignment_source || "—")}
-                                    {item.context_sent.owner_url_llm_alignment ? ` (LLM: ${String(item.context_sent.owner_url_llm_alignment)})` : ""}
-                                  </p>
-                                ) : null}
                                 {bestCompany && (
                                   <div className="pl-2 border-l-2 border-accent/50 dark:border-accent/40 space-y-1">
                                     {(() => {
@@ -1164,56 +1176,6 @@ export default function DashboardCenterContent(props: DashboardCenterContentProp
                       )}
                     </section>
                   )}
-                  {(phlydataOwnerDetail.aircraftpost_fleet?.length ?? 0) > 0 && (
-                    <section>
-                      <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2 flex items-center gap-2">
-                        <Database className="w-4 h-4" /> AircraftPost fleet (technical)
-                      </h4>
-                      <p className="text-xs text-slate-500 dark:text-slate-400 mb-2">Hours, landings, programs, and owner URL from fleet data (matched by registration).</p>
-                      <ul className="space-y-3">
-                        {phlydataOwnerDetail.aircraftpost_fleet!.slice(0, 3).map((r: AircraftpostFleetAircraftRow, i: number) => (
-                          <li
-                            key={r.id || i}
-                            className="rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800/40 p-3 text-sm space-y-1 ring-1 ring-inset ring-slate-100 dark:ring-slate-700/80 border-l-4 border-l-accent/50 dark:border-l-accent/45"
-                          >
-                            <p className="font-medium text-slate-800 dark:text-slate-200">
-                              {r.make_model_name || "—"} {r.mfr_year != null ? `· ${r.mfr_year}` : ""}
-                            </p>
-                            <p className="text-slate-600 dark:text-slate-300">
-                              <span className="text-slate-500 dark:text-slate-400">Serial:</span> {r.serial_number ?? "—"}{" "}
-                              <span className="text-slate-400">·</span>{" "}
-                              <span className="text-slate-500 dark:text-slate-400">Reg:</span> {r.registration_number ?? "—"}
-                            </p>
-                            <p className="text-slate-600 dark:text-slate-300">
-                              <span className="text-slate-500 dark:text-slate-400">Base:</span> {r.base_code ?? "—"}{" "}
-                              <span className="text-slate-400">·</span>{" "}
-                              <span className="text-slate-500 dark:text-slate-400">Country:</span> {r.country_code ?? "—"}
-                            </p>
-                            <p className="text-slate-600 dark:text-slate-300">
-                              <span className="text-slate-500 dark:text-slate-400">Hours:</span> {r.airframe_hours ?? "—"}{" "}
-                              <span className="text-slate-400">·</span>{" "}
-                              <span className="text-slate-500 dark:text-slate-400">Landings:</span> {r.total_landings ?? "—"}{" "}
-                              <span className="text-slate-400">·</span>{" "}
-                              <span className="text-slate-500 dark:text-slate-400">Prior owners:</span> {r.prior_owners ?? "—"}
-                            </p>
-                            {(r.engine_program_type || r.apu_program) && (
-                              <p className="text-slate-600 dark:text-slate-300 text-xs">
-                                {[r.engine_program_type ? `Engine program: ${r.engine_program_type}` : null, r.apu_program ? `APU: ${r.apu_program}` : null].filter(Boolean).join(" · ")}
-                              </p>
-                            )}
-                            {r.owner_url && (
-                              <p className="text-xs">
-                                <a href={r.owner_url} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline">Owner URL</a>
-                              </p>
-                            )}
-                          </li>
-                        ))}
-                      </ul>
-                      {(phlydataOwnerDetail.aircraftpost_fleet!.length ?? 0) > 3 && (
-                        <p className="text-xs text-slate-500 dark:text-slate-400">Showing 3 of {phlydataOwnerDetail.aircraftpost_fleet!.length} matches.</p>
-                      )}
-                    </section>
-                  )}
                   {phlydataOwnerDetail.owners_from_listings.length > 0 && (
                     <section>
                       <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2 flex items-center gap-2">
@@ -1238,10 +1200,12 @@ export default function DashboardCenterContent(props: DashboardCenterContentProp
                   {phlydataOwnerDetail.owners_from_faa.length > 0 && (
                     <section>
                       <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1 flex items-center gap-2">
-                        <MapPin className="w-4 h-4" /> FAA registry (official registrant)
+                        <MapPin className="w-4 h-4" /> FAA MASTER (`faa_master`)
                       </h4>
                       <p className="text-xs text-slate-500 dark:text-slate-400 mb-3 leading-relaxed">
-                        Legal owner / registrant on file with the FAA (from our synced registry). This is the authoritative source for who is registered to the aircraft.
+                        Legal owner / registrant from the ingested FAA MASTER export. For trustee-style names,
+                        optional <strong>Tavily</strong> web hints and an <strong>LLM summary</strong> suggest a possible operating
+                        company (unverified); ZoomInfo may use the AI-suggested query when confidence is sufficient.
                       </p>
                       <ul className="space-y-3">
                         {phlydataOwnerDetail.owners_from_faa.map((o: OwnerFromFaa, i: number) => {
@@ -1259,6 +1223,92 @@ export default function DashboardCenterContent(props: DashboardCenterContentProp
                               <p className="text-base font-semibold text-slate-900 dark:text-slate-100 mb-3">
                                 {o.registrant_name?.trim() || "—"}
                               </p>
+                              {(() => {
+                                const syn: FaaTavilyLlmSynthesis | null | undefined = o.tavily_llm_synthesis;
+                                if (!syn || (!syn.operating_company_name && !syn.summary && !syn.error)) return null;
+                                return (
+                                  <div className="mb-3 rounded-lg border border-slate-200 dark:border-slate-600 bg-violet-50/40 dark:bg-violet-950/20 p-3 text-sm space-y-1.5">
+                                    <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                                      Operating company (Tavily + AI)
+                                    </p>
+                                    {syn.error ? (
+                                      <p className="text-xs text-amber-700 dark:text-amber-400/90">{syn.error}</p>
+                                    ) : null}
+                                    {syn.operating_company_name ? (
+                                      <p className="font-medium text-slate-800 dark:text-slate-100">{syn.operating_company_name}</p>
+                                    ) : null}
+                                    {syn.summary ? (
+                                      <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">{syn.summary}</p>
+                                    ) : null}
+                                    <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs pt-0.5">
+                                      {syn.website ? (
+                                        <a
+                                          href={syn.website.startsWith("http") ? syn.website : `https://${syn.website}`}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="text-accent hover:underline"
+                                        >
+                                          Website (from AI)
+                                        </a>
+                                      ) : null}
+                                      {syn.phone ? <span className="text-slate-600 dark:text-slate-300">{syn.phone}</span> : null}
+                                      {syn.confidence ? (
+                                        <span className="text-slate-400 dark:text-slate-500">Confidence: {syn.confidence}</span>
+                                      ) : null}
+                                    </div>
+                                    <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug">
+                                      Medium/high confidence can trigger an extra ZoomInfo company search.
+                                    </p>
+                                  </div>
+                                );
+                              })()}
+                              {(() => {
+                                const tw: FaaTavilyWebHints | null | undefined = o.tavily_web_hints;
+                                if (!tw || (!tw.results?.length && !tw.error)) return null;
+                                return (
+                                  <div className="mb-3 rounded-lg border border-slate-200 dark:border-slate-600 bg-slate-100/50 dark:bg-slate-900/40 p-3 text-sm space-y-2">
+                                    <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                                      Web search hints (Tavily)
+                                    </p>
+                                    {tw.disclaimer ? (
+                                      <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">{tw.disclaimer}</p>
+                                    ) : null}
+                                    {tw.query ? (
+                                      <p className="text-[10px] text-slate-400 dark:text-slate-500 font-mono break-all">
+                                        Query: {tw.query}
+                                      </p>
+                                    ) : null}
+                                    {tw.error ? (
+                                      <p className="text-xs text-amber-700 dark:text-amber-400/90">{tw.error}</p>
+                                    ) : null}
+                                    {tw.results && tw.results.length > 0 ? (
+                                      <ul className="space-y-2 text-xs">
+                                        {tw.results.map((hit, hi) => (
+                                          <li key={hi} className="border-t border-slate-200 dark:border-slate-600 pt-2 first:border-t-0 first:pt-0">
+                                            {hit.url ? (
+                                              <a
+                                                href={hit.url.startsWith("http") ? hit.url : `https://${hit.url}`}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                className="text-accent font-medium hover:underline break-all"
+                                              >
+                                                {hit.title || hit.url}
+                                              </a>
+                                            ) : (
+                                              <span className="text-slate-700 dark:text-slate-200">{hit.title || "—"}</span>
+                                            )}
+                                            {hit.content ? (
+                                              <p className="text-slate-600 dark:text-slate-300 mt-1 leading-relaxed line-clamp-4">
+                                                {hit.content}
+                                              </p>
+                                            ) : null}
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    ) : null}
+                                  </div>
+                                );
+                              })()}
                               <div className="pt-3 border-t border-slate-200 dark:border-slate-600">
                                 <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2 flex items-center gap-1.5">
                                   <MapPin className="w-3.5 h-3.5 text-accent" aria-hidden />
@@ -1287,10 +1337,9 @@ export default function DashboardCenterContent(props: DashboardCenterContentProp
                     </section>
                   )}
                   {phlydataOwnerDetail.owners_from_listings.length === 0 &&
-                    phlydataOwnerDetail.owners_from_faa.length === 0 &&
-                    (phlydataOwnerDetail.aircraftpost_fleet?.length ?? 0) === 0 && (
+                    phlydataOwnerDetail.owners_from_faa.length === 0 && (
                     <p className="text-sm text-slate-500 dark:text-slate-400">
-                      No owner data found in FAA registry or AircraftPost fleet for this aircraft (check serial, tail number, and model).
+                      No owner data found in FAA MASTER (`faa_master`) for this aircraft (check serial, registration / N-number, and model).
                     </p>
                   )}
                 </>
