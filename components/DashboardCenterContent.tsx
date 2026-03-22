@@ -766,7 +766,6 @@ export default function DashboardCenterContent(props: DashboardCenterContentProp
               </div>
               <div>
                 <h2 className="font-heading font-semibold text-slate-900 dark:text-slate-100">PhlyData Aircraft</h2>
-                <p className="text-xs text-slate-500 dark:text-slate-400">Data from `phlydata_aircraft`. **Search** matches **serial** and **registration** only. Click a row for **`faa_master`** registrant/address (FAA MASTER) and **ZoomInfo** enrichment from that data — **not** AircraftPost.</p>
               </div>
             </div>
           </div>
@@ -1199,14 +1198,9 @@ export default function DashboardCenterContent(props: DashboardCenterContentProp
                   )}
                   {phlydataOwnerDetail.owners_from_faa.length > 0 && (
                     <section>
-                      <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-1 flex items-center gap-2">
+                      <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400 mb-2 flex items-center gap-2">
                         <MapPin className="w-4 h-4" /> FAA MASTER (`faa_master`)
                       </h4>
-                      <p className="text-xs text-slate-500 dark:text-slate-400 mb-3 leading-relaxed">
-                        Legal owner / registrant from the ingested FAA MASTER export. For trustee-style names,
-                        optional <strong>Tavily</strong> web hints and an <strong>LLM summary</strong> suggest a possible operating
-                        company (unverified); ZoomInfo may use the AI-suggested query when confidence is sufficient.
-                      </p>
                       <ul className="space-y-3">
                         {phlydataOwnerDetail.owners_from_faa.map((o: OwnerFromFaa, i: number) => {
                           const addr = faaAddressLines(o);
