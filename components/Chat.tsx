@@ -14,6 +14,10 @@ type Message = {
   content: string;
   sources?: SourceItem[];
   data_used?: DataUsed | null;
+  /** True while SSE tokens are arriving (ChatGPT-style). */
+  streaming?: boolean;
+  /** Short status before first token (e.g. "Searching sources…"). */
+  status?: string;
 };
 
 type ChatProps = {
