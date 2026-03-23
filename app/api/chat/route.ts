@@ -1,7 +1,15 @@
+/**
+ * Legacy proxy: browser → Next → FastAPI. The UI now calls FastAPI directly via `postRagAnswer` in `lib/api.ts`
+ * (one fewer hop). Keep this route for old clients or curl to same-origin only.
+ */
 import { NextRequest, NextResponse } from "next/server";
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL || process.env.NEXT_PUBLIC_RAG_API_URL || "http://localhost:8000";
-const REQUEST_TIMEOUT_MS = 65000;
+/** Consultant pipeline (expand + Tavily + RAG + 2× LLM) often needs >65s; abort matches this or user sees a false "timeout". */
+const REQUEST_TIMEOUT_MS = Math.min(
+  300_000,
+  Math.max(30_000, parseInt(process.env.CHAT_PROXY_TIMEOUT_MS || "120000", 10) || 120_000)
+);
 
 const DEMO_ANSWER =
   "Based on real-time market data, this is a placeholder response. Connect the backend (see README) for live answers.";

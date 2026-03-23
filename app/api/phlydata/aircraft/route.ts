@@ -1,9 +1,8 @@
 import { NextResponse } from "next/server";
 
 /**
- * Proxy endpoint:
- * The browser should call same-origin `/api/phlydata/aircraft` to avoid CORS/network issues
- * with the remote FastAPI host. Next.js server then fetches FastAPI and returns JSON.
+ * Optional same-origin proxy for `/api/phlydata/aircraft`.
+ * The app now calls FastAPI directly from `getPhlydataAircraft` in `lib/api.ts` when CORS allows.
  */
 export async function GET(req: Request) {
   const url = new URL(req.url);

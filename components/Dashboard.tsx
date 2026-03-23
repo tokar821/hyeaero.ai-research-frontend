@@ -71,7 +71,7 @@ export default function Dashboard({ isAuthenticated }: DashboardProps) {
   const [phlydataPage, setPhlydataPage] = useState(1);
   const [phlydataPageSize, setPhlydataPageSize] = useState(100);
   const [phlydataSearch, setPhlydataSearch] = useState("");
-  /** Debounced query sent to `/api/phlydata/aircraft?q=` on each search. */
+  /** Debounced query sent to FastAPI `GET .../api/phlydata/aircraft?q=` on each search. */
   const [phlydataSearchDebounced, setPhlydataSearchDebounced] = useState("");
   const [phlydataLoading, setPhlydataLoading] = useState(false);
   const [phlydataError, setPhlydataError] = useState<string | null>(null);

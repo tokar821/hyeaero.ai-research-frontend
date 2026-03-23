@@ -22,6 +22,8 @@ Create `.env.local`:
 
 ```env
 NEXT_PUBLIC_API_URL=http://localhost:8000
+# Optional: browser wait for POST /api/rag/answer (ms). Consultant runs LLM+Tavily+RAG; default 180000.
+# NEXT_PUBLIC_RAG_TIMEOUT_MS=180000
 # Optional: show a canned demo reply if backend is offline
 NEXT_PUBLIC_DEMO_CHAT=false
 ```
@@ -44,8 +46,9 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ## Backend connection
 
-- Chat is proxied via Next.js (`/api/chat` → backend `/api/rag/answer`).
-- Market Comparison, Price Estimator, Resale Advisory, and Owner Details call the backend directly using `NEXT_PUBLIC_API_URL`.
+- **Ask Consultant** uses **`POST /api/rag/answer/stream`** (SSE) so the reply appears **token-by-token** like ChatGPT. **PhlyData aircraft list** and other tools call FastAPI **directly** with `NEXT_PUBLIC_API_URL`. Legacy routes `app/api/chat` and `app/api/phlydata/aircraft` still exist for same-origin tools only.
+- Market Comparison, Price Estimator, Resale Advisory, and Owner Details also use `NEXT_PUBLIC_API_URL`.
+- The backend must send **CORS** `Access-Control-Allow-Origin` for your frontend origin (see `backend/api/main.py` / `CORS_ORIGINS`).
 - The **Owner details** panel shows combined data from listings, FAA registry, and ZoomInfo (when enabled on the backend).
 
 To show a demo reply when the backend is down, set:

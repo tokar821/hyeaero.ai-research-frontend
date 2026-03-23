@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import { jsPDF } from "jspdf";
 import { Bot, Send, Download } from "lucide-react";
+import { postRagAnswerStream } from "@/lib/api";
 
 export type SourceItem = { entity_type?: string; entity_id?: string | null; score?: number };
 export type DataUsed = Record<string, number>;
@@ -121,42 +122,90 @@ export default function Chat({ onQuerySent, suggestedQuery, onSuggestedQueryCons
     onQuerySent?.(text);
     setIsLoading(true);
 
-    try {
-      const history = messages
-        .slice(-12)
-        .map((m) => ({ role: m.role, content: m.content }));
-      const res = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: text, history }),
-      });
-      const data = await res.json();
-      const answer = data?.answer ?? "I couldn't get a response. Please try again.";
-      const sources = Array.isArray(data?.sources) ? data.sources : [];
-      const data_used = data?.data_used && typeof data.data_used === "object" ? data.data_used : null;
+    const history = messages
+      .slice(-12)
+      .map((m) => ({ role: m.role, content: m.content }));
+    const assistantId = generateId();
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: assistantId,
+        role: "assistant",
+        content: "",
+        streaming: true,
+        status: "Checking resources…",
+      },
+    ]);
 
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: generateId(),
-          role: "assistant",
-          content: answer,
-          sources: sources.length ? sources : undefined,
-          data_used: data_used || undefined,
+    try {
+      await postRagAnswerStream(text, {
+        history,
+        onStatus: (message) => {
+          setMessages((prev) =>
+            prev.map((m) => (m.id === assistantId ? { ...m, status: message } : m))
+          );
         },
-      ]);
-    } catch {
-      const shouldRetry = retryCount < MAX_RETRIES;
-      const errorMsg =
-        "Sorry, the request failed. Check your connection and that the backend is running (see README).";
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: generateId(),
-          role: "assistant",
-          content: shouldRetry ? "Retrying…" : errorMsg,
+        onDelta: (chunk) => {
+          setMessages((prev) =>
+            prev.map((m) => {
+              if (m.id !== assistantId) return m;
+              const next = (m.content || "") + chunk;
+              return {
+                ...m,
+                content: next,
+                status: next.length > 0 ? undefined : m.status,
+              };
+            })
+          );
         },
-      ]);
+        onDone: (payload) => {
+          const sources = Array.isArray(payload.sources) ? payload.sources : [];
+          const data_used =
+            payload.data_used && typeof payload.data_used === "object"
+              ? (payload.data_used as DataUsed)
+              : null;
+          const err = payload.error;
+          setMessages((prev) =>
+            prev.map((m) => {
+              if (m.id !== assistantId) return m;
+              let content = m.content || "";
+              if (err && !content.trim()) {
+                content = err;
+              } else if (err && content.trim()) {
+                content = `${content}\n\n(${err})`;
+              } else if (!content.trim() && !err) {
+                content = "I couldn't get a response. Please try again.";
+              }
+              return {
+                ...m,
+                content,
+                streaming: false,
+                status: undefined,
+                sources: sources.length ? (sources as SourceItem[]) : undefined,
+                data_used: data_used || undefined,
+              };
+            })
+          );
+        },
+      });
+    } catch (e) {
+      const isTimeout = e instanceof Error && e.name === "AbortError";
+      const shouldRetry = !isTimeout && retryCount < MAX_RETRIES;
+      const errorMsg = isTimeout
+        ? "The request took too long. Try a shorter question, or increase NEXT_PUBLIC_RAG_TIMEOUT_MS (see README)."
+        : "Sorry, the request failed. Check NEXT_PUBLIC_API_URL, CORS, and that the backend is running (see README).";
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === assistantId
+            ? {
+                ...m,
+                content: shouldRetry ? "Retrying…" : errorMsg,
+                streaming: false,
+                status: undefined,
+              }
+            : m
+        )
+      );
       if (shouldRetry) {
         setTimeout(() => sendMessage(retryCount + 1), 1500);
       }
@@ -203,7 +252,16 @@ export default function Chat({ onQuerySent, suggestedQuery, onSuggestedQueryCons
                 </div>
                 <div className="max-w-[85%] space-y-1.5">
                   <div className="rounded-2xl rounded-bl-md bg-white dark:bg-slate-800 px-5 py-3.5 text-slate-800 dark:text-slate-200 text-[15px] leading-relaxed shadow-sm border border-slate-100 dark:border-slate-600 whitespace-pre-wrap">
+                    {!m.content && (m.streaming || m.status) ? (
+                      <span className="text-slate-500 dark:text-slate-400">{m.status || "Thinking…"}</span>
+                    ) : null}
                     {m.content}
+                    {m.streaming ? (
+                      <span
+                        className="inline-block w-0.5 h-4 ml-1 bg-accent align-middle animate-pulse rounded-sm"
+                        aria-hidden
+                      />
+                    ) : null}
                   </div>
                   {m.data_used && Object.keys(m.data_used).length > 0 && (
                     <p className="pl-1 text-xs text-slate-500 dark:text-slate-400 italic">
@@ -214,7 +272,7 @@ export default function Chat({ onQuerySent, suggestedQuery, onSuggestedQueryCons
               </div>
             )
           )}
-          {isLoading && (
+          {isLoading && !messages.some((m) => m.streaming) && (
             <div className="flex gap-3">
               <div className="w-8 h-8 rounded-full bg-accent flex-shrink-0 flex items-center justify-center text-white animate-pulse" aria-hidden>
                 <Bot className="w-4 h-4" />

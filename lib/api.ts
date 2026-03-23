@@ -1,9 +1,17 @@
 /**
  * HyeAero.AI — API client for Aircraft Research & Valuation Consultant
- * Base URL: NEXT_PUBLIC_API_URL (default http://88.99.198.243)
+ * Base URL: NEXT_PUBLIC_API_URL (see README; e.g. http://localhost:8000 for local API)
  */
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://88.99.198.243";
+export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://88.99.198.243";
+
+const API_URL = API_BASE_URL;
+
+/** Browser → FastAPI directly (no Next.js proxy). Consultant pipeline can exceed 60s. */
+const RAG_ANSWER_TIMEOUT_MS = Math.min(
+  300_000,
+  Math.max(45_000, parseInt(process.env.NEXT_PUBLIC_RAG_TIMEOUT_MS || "180000", 10) || 180_000)
+);
 
 export type AircraftModelsResponse = { models: string[] };
 
@@ -55,8 +63,176 @@ async function fetchApi<T>(path: string, options: ApiOptions = {}): Promise<T> {
 
 export type ChatResponse = { answer: string; sources?: unknown[]; error?: string | null };
 
+export type ConsultantChatResponse = {
+  answer: string;
+  sources?: unknown[];
+  data_used?: Record<string, unknown> | null;
+  error?: string | null;
+};
+
+/**
+ * Ask Consultant: POST directly to FastAPI `/api/rag/answer` (one hop; faster than Next `/api/chat` proxy).
+ */
+export async function postRagAnswer(
+  query: string,
+  options?: {
+    history?: Array<{ role: string; content: string }>;
+    timeoutMs?: number;
+  }
+): Promise<ConsultantChatResponse> {
+  const timeoutMs = options?.timeoutMs ?? RAG_ANSWER_TIMEOUT_MS;
+  const controller = new AbortController();
+  const tid = setTimeout(() => controller.abort(), timeoutMs);
+  const body: Record<string, unknown> = { query: query.trim() };
+  if (options?.history?.length) {
+    body.history = options.history;
+  }
+  try {
+    const res = await fetch(`${API_URL}/api/rag/answer`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    const data = (await res.json().catch(() => ({}))) as ConsultantChatResponse & { detail?: string };
+    if (!res.ok) {
+      const msg = data.detail || data.error || `API ${res.status}`;
+      return {
+        answer: msg,
+        sources: [],
+        data_used: null,
+        error: msg,
+      };
+    }
+    return {
+      answer: data.answer ?? "",
+      sources: Array.isArray(data.sources) ? data.sources : [],
+      data_used: data.data_used && typeof data.data_used === "object" ? data.data_used : null,
+      error: data.error ?? null,
+    };
+  } finally {
+    clearTimeout(tid);
+  }
+}
+
+export type StreamDonePayload = {
+  sources?: unknown[];
+  data_used?: Record<string, unknown> | null;
+  error?: string | null;
+};
+
+/**
+ * ChatGPT-style streaming: POST `/api/rag/answer/stream` (SSE). Calls onDelta for each token chunk.
+ */
+export async function postRagAnswerStream(
+  query: string,
+  options: {
+    history?: Array<{ role: string; content: string }>;
+    timeoutMs?: number;
+    onDelta: (text: string) => void;
+    onStatus?: (message: string) => void;
+    onDone: (payload: StreamDonePayload) => void;
+    onError?: (message: string) => void;
+  }
+): Promise<void> {
+  const timeoutMs = options.timeoutMs ?? RAG_ANSWER_TIMEOUT_MS;
+  const controller = new AbortController();
+  const tid = setTimeout(() => controller.abort(), timeoutMs);
+  const body: Record<string, unknown> = { query: query.trim() };
+  if (options.history?.length) {
+    body.history = options.history;
+  }
+  try {
+    const res = await fetch(`${API_URL}/api/rag/answer/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const t = await res.text();
+      let msg = `HTTP ${res.status}`;
+      try {
+        const j = JSON.parse(t) as { detail?: string };
+        if (j.detail) msg = j.detail;
+      } catch {
+        if (t) msg = t.slice(0, 200);
+      }
+      options.onError?.(msg);
+      options.onDone({ sources: [], data_used: null, error: msg });
+      return;
+    }
+    const reader = res.body?.getReader();
+    if (!reader) {
+      const msg = "No response body";
+      options.onError?.(msg);
+      options.onDone({ error: msg });
+      return;
+    }
+    const decoder = new TextDecoder();
+    let buffer = "";
+    const flushBlock = (block: string) => {
+      const lines = block.split("\n");
+      for (const raw of lines) {
+        const line = raw.trimEnd();
+        if (!line.startsWith("data:")) continue;
+        const payload = line.slice(5).trim();
+        if (!payload) continue;
+        try {
+          const ev = JSON.parse(payload) as {
+            type?: string;
+            text?: string;
+            message?: string;
+            sources?: unknown[];
+            data_used?: Record<string, unknown> | null;
+            error?: string | null;
+          };
+          if (ev.type === "delta" && ev.text) options.onDelta(ev.text);
+          if (ev.type === "status" && ev.message) options.onStatus?.(ev.message);
+          if (ev.type === "error" && ev.message) options.onError?.(ev.message);
+          if (ev.type === "done") {
+            options.onDone({
+              sources: ev.sources,
+              data_used: ev.data_used ?? null,
+              error: ev.error ?? null,
+            });
+          }
+        } catch {
+          /* ignore malformed chunk */
+        }
+      }
+    };
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split("\n\n");
+      buffer = parts.pop() ?? "";
+      for (const p of parts) {
+        if (p.trim()) flushBlock(p);
+      }
+    }
+    if (buffer.trim()) flushBlock(buffer);
+  } catch (e) {
+    const isTimeout = e instanceof Error && e.name === "AbortError";
+    const msg = isTimeout
+      ? "The request took too long. Try a shorter question or increase NEXT_PUBLIC_RAG_TIMEOUT_MS."
+      : e instanceof Error
+        ? e.message
+        : "Stream failed";
+    options.onError?.(msg);
+    options.onDone({ sources: [], data_used: null, error: msg });
+  } finally {
+    clearTimeout(tid);
+  }
+}
+
 export function postChat(query: string): Promise<ChatResponse> {
-  return fetchApi<ChatResponse>("/api/rag/answer", { method: "POST", body: { query } });
+  return postRagAnswer(query).then((r) => ({
+    answer: r.answer,
+    sources: r.sources,
+    error: r.error,
+  }));
 }
 
 export type MarketComparisonParams = {
@@ -180,8 +356,11 @@ export async function getPhlydataAircraft(params?: { page?: number; page_size?: 
   searchParams.set("page", String(page));
   searchParams.set("page_size", String(page_size));
   if (q && q.trim()) searchParams.set("q", q.trim());
-  // Call same-origin Next proxy (avoids CORS/network issues from the browser).
-  const res = await fetch(`/api/phlydata/aircraft?${searchParams}`);
+  // Direct to FastAPI (same as other tabs). Backend CORS must allow this origin (see api/main.py).
+  const res = await fetch(`${API_URL}/api/phlydata/aircraft?${searchParams}`, {
+    headers: { Accept: "application/json" },
+    cache: "no-store",
+  });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error((err as { detail?: string }).detail || `API ${res.status}`);
