@@ -117,6 +117,28 @@ const TAVILY_BUCKET_ORDER: { key: TavilyVisualBucket; label: string }[] = [
   { key: "more", label: "More photos" },
 ];
 
+/** Backend should strip these; keep frontend guard so broken loads never show Tavily disclaimer as visible alt text. */
+function isPlaceholderImageDescription(desc: string | null | undefined): boolean {
+  if (desc == null || !String(desc).trim()) return false;
+  const low = String(desc).toLowerCase();
+  if (low.startsWith("tavily") || low.includes("tavily image")) return true;
+  const badSubstrings = [
+    "verify visually",
+    "tail-specific",
+    "tail specific",
+    "unverified image",
+    "third-party",
+    "third party",
+  ];
+  return badSubstrings.some((b) => low.includes(b));
+}
+
+function displayImageAlt(desc: string | null | undefined): string {
+  if (!desc || isPlaceholderImageDescription(desc)) return "";
+  const t = desc.trim();
+  return t.length > 140 ? `${t.slice(0, 137)}…` : t;
+}
+
 function groupImagesBySource(images: ConsultantAircraftImage[]): Map<string, ConsultantAircraftImage[]> {
   const m = new Map<string, ConsultantAircraftImage[]>();
   for (const im of images) {
@@ -127,39 +149,89 @@ function groupImagesBySource(images: ConsultantAircraftImage[]): Map<string, Con
   return m;
 }
 
+function ConsultantImageTile({
+  im,
+  title,
+  onImageError,
+}: {
+  im: ConsultantAircraftImage;
+  title: string;
+  onImageError: () => void;
+}) {
+  const alt = displayImageAlt(im.description);
+
+  return (
+    <a
+      href={im.page_url || im.url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="group relative block rounded-lg overflow-hidden border border-slate-200 dark:border-slate-600 bg-slate-100 dark:bg-slate-900/50 aspect-[4/3] focus:outline-none focus:ring-2 focus:ring-accent/40"
+      title={title}
+    >
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={im.url}
+        alt={alt || "Aircraft photo"}
+        loading="lazy"
+        decoding="async"
+        className="w-full h-full object-cover transition-transform group-hover:scale-[1.02]"
+        onError={onImageError}
+      />
+      <span className="absolute bottom-1 left-1 right-1 flex flex-wrap gap-1 pointer-events-none">
+        <span className="text-[10px] px-1.5 py-0.5 rounded bg-black/60 text-white truncate max-w-full">
+          {sourceLabel(im.source)}
+        </span>
+      </span>
+    </a>
+  );
+}
+
 function ImageTileGrid({
   items,
   reactKeyPrefix,
+  bucketLabel,
 }: {
   items: ConsultantAircraftImage[];
   reactKeyPrefix: string;
+  /** When set, label is omitted if every tile fails to load (broken URL / hotlink). */
+  bucketLabel?: string;
 }) {
-  return (
+  const [failedUrls, setFailedUrls] = useState(() => new Set<string>());
+  const markFailed = (url: string) => {
+    setFailedUrls((prev) => {
+      if (prev.has(url)) return prev;
+      const next = new Set(prev);
+      next.add(url);
+      return next;
+    });
+  };
+
+  const visible = items.filter((im) => !failedUrls.has(im.url));
+  if (visible.length === 0) return null;
+
+  const grid = (
     <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-      {items.map((im, i) => (
-        <a
-          key={`${reactKeyPrefix}-${im.url}-${i}`}
-          href={im.page_url || im.url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="group relative block rounded-lg overflow-hidden border border-slate-200 dark:border-slate-600 bg-slate-100 dark:bg-slate-900/50 aspect-[4/3] focus:outline-none focus:ring-2 focus:ring-accent/40"
-          title={im.description || im.url}
-        >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={im.url}
-            alt={im.description || "Aircraft image"}
-            loading="lazy"
-            decoding="async"
-            className="w-full h-full object-cover transition-transform group-hover:scale-[1.02]"
+      {visible.map((im, i) => {
+        const disp = displayImageAlt(im.description);
+        const title = disp || (im.description && !isPlaceholderImageDescription(im.description) ? im.description : im.url);
+        return (
+          <ConsultantImageTile
+            key={`${reactKeyPrefix}-${im.url}-${i}`}
+            im={im}
+            title={title}
+            onImageError={() => markFailed(im.url)}
           />
-          <span className="absolute bottom-1 left-1 right-1 flex flex-wrap gap-1">
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-black/60 text-white truncate max-w-full">
-              {sourceLabel(im.source)}
-            </span>
-          </span>
-        </a>
-      ))}
+        );
+      })}
+    </div>
+  );
+
+  if (!bucketLabel) return grid;
+
+  return (
+    <div className="space-y-2">
+      <p className="text-xs font-medium text-slate-600 dark:text-slate-400">{bucketLabel}</p>
+      {grid}
     </div>
   );
 }
@@ -201,10 +273,12 @@ function AircraftImageGallery({ images }: { images: ConsultantAircraftImage[] })
                 const bucket = byBucket.get(bucketKey) || [];
                 if (!bucket.length) return null;
                 return (
-                  <div key={`${sourceKey}-${bucketKey}`} className="space-y-2">
-                    <p className="text-xs font-medium text-slate-600 dark:text-slate-400">{label}</p>
-                    <ImageTileGrid items={bucket} reactKeyPrefix={`${sourceKey}-${bucketKey}`} />
-                  </div>
+                  <ImageTileGrid
+                    key={`${sourceKey}-${bucketKey}`}
+                    items={bucket}
+                    reactKeyPrefix={`${sourceKey}-${bucketKey}`}
+                    bucketLabel={label}
+                  />
                 );
               })}
             </div>
