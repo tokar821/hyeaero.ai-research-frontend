@@ -47,7 +47,7 @@ export async function POST(request: NextRequest) {
         // use default message
       }
       return NextResponse.json(
-        { answer: message, sources: [], data_used: null, error: message },
+        { answer: message, sources: [], data_used: null, aircraft_images: null, error: message },
         { status: 200 }
       );
     }
@@ -57,6 +57,7 @@ export async function POST(request: NextRequest) {
       answer: data.answer ?? "",
       sources: data.sources ?? [],
       data_used: data.data_used ?? null,
+      aircraft_images: data.aircraft_images ?? null,
       error: data.error ?? null,
     });
   } catch (e) {
@@ -68,7 +69,7 @@ export async function POST(request: NextRequest) {
           ? "The request took too long. Try a shorter or simpler question."
           : "Unable to reach the research service. Start the backend (python runners/run_api.py) and set NEXT_PUBLIC_API_URL.";
     return NextResponse.json(
-      { answer: message, sources: [], data_used: null, error: message },
+      { answer: message, sources: [], data_used: null, aircraft_images: null, error: message },
       { status: 200 }
     );
   }

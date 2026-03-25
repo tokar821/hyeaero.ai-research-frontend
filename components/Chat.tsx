@@ -3,10 +3,15 @@
 import { useState, useRef, useEffect } from "react";
 import { jsPDF } from "jspdf";
 import { Bot, Send, Download } from "lucide-react";
-import { postRagAnswerStream } from "@/lib/api";
+import {
+  mergeConsultantAircraftImageLists,
+  parseConsultantAircraftImages,
+  postRagAnswerStream,
+  type ConsultantAircraftImage,
+} from "@/lib/api";
 
 export type SourceItem = { entity_type?: string; entity_id?: string | null; score?: number };
-export type DataUsed = Record<string, number>;
+export type DataUsed = Record<string, number | string | unknown>;
 
 type Message = {
   id: string;
@@ -14,6 +19,8 @@ type Message = {
   content: string;
   sources?: SourceItem[];
   data_used?: DataUsed | null;
+  /** Resolved aircraft photos (Tavily / scrape gallery / listing og) — same as backend ``aircraft_images``. */
+  aircraft_images?: ConsultantAircraftImage[];
   /** True while SSE tokens are arriving (ChatGPT-style). */
   streaming?: boolean;
   /** Short status before first token (e.g. "Searching sources…"). */
@@ -49,10 +56,172 @@ const WELCOME = `Hello! I'm your AI research consultant, checking resources for 
 • Price estimations and valuations
 • Resale potential analysis`;
 
+/** Footer under assistant message — avoid summing all numeric data_used keys (that inflated "74 sources"). */
 function formatDataUsed(data_used: DataUsed): string {
-  const total = Object.values(data_used).reduce((sum, n) => sum + (typeof n === "number" ? n : 0), 0);
-  if (total <= 0) return "";
-  return total === 1 ? "Based on 1 external source." : `Based on ${total} external sources.`;
+  const d = data_used as unknown as Record<string, unknown>;
+  const parts: string[] = [];
+  const nPhly = Number(d.phlydata_aircraft_rows || 0);
+  const nList = Number(d.consultant_internal_listings || 0);
+  const nSales = Number(d.consultant_internal_sales_comps || 0);
+  const nTav = Number(d.tavily_results || 0);
+  const nImg = Number(d.consultant_aircraft_image_count ?? 0);
+  if (nPhly > 0) parts.push("PhlyData/FAA");
+  if (nList > 0 || nSales > 0) parts.push("internal listings/sales");
+  if (nTav > 0) parts.push("web search");
+  if (nImg > 0) parts.push(`${nImg} photo URL${nImg === 1 ? "" : "s"}`);
+  if (parts.length === 0) return "";
+  return `Sources used: ${parts.join(" · ")}.`;
+}
+
+function sourceLabel(src: string | undefined): string {
+  const s = (src || "").toLowerCase();
+  if (s === "tavily") return "Web";
+  if (s === "scrape_gallery") return "Listing gallery";
+  if (s === "listing_og") return "Listing preview";
+  return src || "Image";
+}
+
+function sectionTitleForSource(src: string): string {
+  const s = src.toLowerCase();
+  if (s === "tavily") return "Web images";
+  if (s === "scrape_gallery") return "Marketplace gallery (scraped)";
+  if (s === "listing_og") return "Listing preview (og:image)";
+  return "Other";
+}
+
+const SOURCE_SECTION_ORDER = ["tavily", "scrape_gallery", "listing_og"] as const;
+
+/** Heuristic buckets for Tavily/CDN URLs (paths rarely contain the tail). */
+type TavilyVisualBucket = "exterior" | "cabin" | "more";
+
+function tavilyImageBucket(im: ConsultantAircraftImage): TavilyVisualBucket {
+  const blob = `${im.description || ""} ${im.url}`.toLowerCase();
+  if (
+    /\b(cabin|interior|inside|galley|seat|seating|cockpit|flight deck|salon|lav|berth|divan|upholstery)\b/.test(blob)
+  ) {
+    return "cabin";
+  }
+  if (
+    /\b(exterior|ramp|taxi|takeoff|take-off|landing|airborne|in flight|fuselage|winglets|nose|tail fin|jetphotos)\b/.test(
+      blob
+    )
+  ) {
+    return "exterior";
+  }
+  return "more";
+}
+
+const TAVILY_BUCKET_ORDER: { key: TavilyVisualBucket; label: string }[] = [
+  { key: "exterior", label: "Exterior views" },
+  { key: "cabin", label: "Cabin & interior" },
+  { key: "more", label: "More photos" },
+];
+
+function groupImagesBySource(images: ConsultantAircraftImage[]): Map<string, ConsultantAircraftImage[]> {
+  const m = new Map<string, ConsultantAircraftImage[]>();
+  for (const im of images) {
+    const key = (im.source || "other").toLowerCase();
+    if (!m.has(key)) m.set(key, []);
+    m.get(key)!.push(im);
+  }
+  return m;
+}
+
+function ImageTileGrid({
+  items,
+  reactKeyPrefix,
+}: {
+  items: ConsultantAircraftImage[];
+  reactKeyPrefix: string;
+}) {
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+      {items.map((im, i) => (
+        <a
+          key={`${reactKeyPrefix}-${im.url}-${i}`}
+          href={im.page_url || im.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="group relative block rounded-lg overflow-hidden border border-slate-200 dark:border-slate-600 bg-slate-100 dark:bg-slate-900/50 aspect-[4/3] focus:outline-none focus:ring-2 focus:ring-accent/40"
+          title={im.description || im.url}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={im.url}
+            alt={im.description || "Aircraft image"}
+            loading="lazy"
+            decoding="async"
+            className="w-full h-full object-cover transition-transform group-hover:scale-[1.02]"
+          />
+          <span className="absolute bottom-1 left-1 right-1 flex flex-wrap gap-1">
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-black/60 text-white truncate max-w-full">
+              {sourceLabel(im.source)}
+            </span>
+          </span>
+        </a>
+      ))}
+    </div>
+  );
+}
+
+function AircraftImageGallery({ images }: { images: ConsultantAircraftImage[] }) {
+  if (!images.length) return null;
+  const grouped = groupImagesBySource(images);
+  const orderedKeys: string[] = [];
+  for (const k of SOURCE_SECTION_ORDER) {
+    if (grouped.has(k) && grouped.get(k)!.length) orderedKeys.push(k);
+  }
+  for (const k of grouped.keys()) {
+    if (!orderedKeys.includes(k)) orderedKeys.push(k);
+  }
+
+  return (
+    <div className="pl-1 mt-3 space-y-4">
+      <p className="text-xs font-medium text-slate-600 dark:text-slate-300">
+        Aircraft images — from web search and listing sources (verify on the site; may not be this exact airframe)
+      </p>
+      {orderedKeys.map((sourceKey) => {
+        const section = grouped.get(sourceKey);
+        if (!section?.length) return null;
+
+        if (sourceKey === "tavily") {
+          const byBucket = new Map<TavilyVisualBucket, ConsultantAircraftImage[]>();
+          for (const b of ["exterior", "cabin", "more"] as TavilyVisualBucket[]) {
+            byBucket.set(b, []);
+          }
+          for (const im of section) {
+            byBucket.get(tavilyImageBucket(im))!.push(im);
+          }
+          return (
+            <div key={sourceKey} className="space-y-3">
+              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                {sectionTitleForSource(sourceKey)}
+              </p>
+              {TAVILY_BUCKET_ORDER.map(({ key: bucketKey, label }) => {
+                const bucket = byBucket.get(bucketKey) || [];
+                if (!bucket.length) return null;
+                return (
+                  <div key={`${sourceKey}-${bucketKey}`} className="space-y-2">
+                    <p className="text-xs font-medium text-slate-600 dark:text-slate-400">{label}</p>
+                    <ImageTileGrid items={bucket} reactKeyPrefix={`${sourceKey}-${bucketKey}`} />
+                  </div>
+                );
+              })}
+            </div>
+          );
+        }
+
+        return (
+          <div key={sourceKey} className="space-y-2">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+              {sectionTitleForSource(sourceKey)}
+            </p>
+            <ImageTileGrid items={section} reactKeyPrefix={sourceKey} />
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 function wrapText(doc: jsPDF, text: string, x: number, y: number, maxWidth: number, lineHeight: number): number {
@@ -89,6 +258,22 @@ function downloadReport(messages: Message[]) {
     y += lineHeight;
     doc.setFont("helvetica", "normal");
     y = wrapText(doc, m.content, margin, y, maxWidth, lineHeight) + lineHeight;
+    if (m.role === "assistant" && m.aircraft_images?.length) {
+      y += lineHeight * 0.5;
+      doc.setFont("helvetica", "bold");
+      doc.text("Image URLs (open in browser):", margin, y);
+      y += lineHeight;
+      doc.setFont("helvetica", "normal");
+      for (const im of m.aircraft_images.slice(0, 12)) {
+        if (y > 275) {
+          doc.addPage();
+          y = margin;
+        }
+        const line = `${sourceLabel(im.source)} — ${im.url}`;
+        y = wrapText(doc, line, margin, y, maxWidth, lineHeight * 0.85);
+      }
+      y += lineHeight * 0.5;
+    }
   }
   doc.save(`hyeaero-research-report-${new Date().toISOString().slice(0, 10)}.pdf`);
 }
@@ -168,6 +353,12 @@ export default function Chat({ onQuerySent, suggestedQuery, onSuggestedQueryCons
             payload.data_used && typeof payload.data_used === "object"
               ? (payload.data_used as DataUsed)
               : null;
+          const duRec = data_used as Record<string, unknown> | null;
+          const ai = mergeConsultantAircraftImageLists(
+            parseConsultantAircraftImages(payload.aircraft_images),
+            duRec ? parseConsultantAircraftImages(duRec.aircraft_images) : []
+          );
+          const aiOut = ai.length > 0 ? ai : undefined;
           const err = payload.error;
           setMessages((prev) =>
             prev.map((m) => {
@@ -187,6 +378,7 @@ export default function Chat({ onQuerySent, suggestedQuery, onSuggestedQueryCons
                 status: undefined,
                 sources: sources.length ? (sources as SourceItem[]) : undefined,
                 data_used: data_used || undefined,
+                aircraft_images: aiOut,
               };
             })
           );
@@ -267,6 +459,19 @@ export default function Chat({ onQuerySent, suggestedQuery, onSuggestedQueryCons
                       />
                     ) : null}
                   </div>
+                  {!m.streaming && m.aircraft_images && m.aircraft_images.length > 0 ? (
+                    <AircraftImageGallery images={m.aircraft_images} />
+                  ) : null}
+                  {!m.streaming &&
+                  (!m.aircraft_images || m.aircraft_images.length === 0) &&
+                  (Number((m.data_used as Record<string, unknown> | undefined)?.consultant_user_asked_photos) === 1 ||
+                    Number((m.data_used as Record<string, unknown> | undefined)?.consultant_show_image_ui_context) ===
+                      1) ? (
+                    <p className="pl-1 mt-2 text-xs text-slate-500 dark:text-slate-400">
+                      No image URLs matched from our web search or listing pipeline for this question. Try adding the
+                      full registration or serial, or phrases like “photos” / “images” with the tail number.
+                    </p>
+                  ) : null}
                   {m.data_used && Object.keys(m.data_used).length > 0 && (
                     <p className="pl-1 text-xs text-slate-500 dark:text-slate-400 italic">
                       {formatDataUsed(m.data_used)}

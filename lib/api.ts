@@ -63,12 +63,62 @@ async function fetchApi<T>(path: string, options: ApiOptions = {}): Promise<T> {
 
 export type ChatResponse = { answer: string; sources?: unknown[]; error?: string | null };
 
+/** Consultant image row: real URLs only (Tavily, marketplace scrape JSON, listing og:image). */
+export type ConsultantAircraftImage = {
+  url: string;
+  source?: string;
+  description?: string | null;
+  page_url?: string | null;
+  lookup_key?: string | null;
+};
+
 export type ConsultantChatResponse = {
   answer: string;
   sources?: unknown[];
   data_used?: Record<string, unknown> | null;
+  aircraft_images?: ConsultantAircraftImage[];
   error?: string | null;
 };
+
+/** Prefer Tavily scrape order: primary list first, then extras from ``data_used``, deduped by URL. */
+export function mergeConsultantAircraftImageLists(
+  ...lists: Array<ConsultantAircraftImage[] | undefined | null>
+): ConsultantAircraftImage[] {
+  const seen = new Set<string>();
+  const out: ConsultantAircraftImage[] = [];
+  for (const list of lists) {
+    if (!list?.length) continue;
+    for (const im of list) {
+      const u = (im.url || "").trim();
+      if (!u || seen.has(u)) continue;
+      seen.add(u);
+      out.push(im);
+    }
+  }
+  return out;
+}
+
+export function parseConsultantAircraftImages(raw: unknown): ConsultantAircraftImage[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ConsultantAircraftImage[] = [];
+  for (const item of raw) {
+    if (typeof item !== "object" || item === null || !("url" in item)) continue;
+    const u = (item as { url?: unknown }).url;
+    if (typeof u !== "string" || (!u.startsWith("https://") && !u.startsWith("http://"))) continue;
+    const src = (item as { source?: unknown }).source;
+    const desc = (item as { description?: unknown }).description;
+    const page = (item as { page_url?: unknown }).page_url;
+    const lk = (item as { lookup_key?: unknown }).lookup_key;
+    out.push({
+      url: u,
+      source: typeof src === "string" ? src : undefined,
+      description: typeof desc === "string" ? desc : desc === null ? null : undefined,
+      page_url: typeof page === "string" ? page : page === null ? null : undefined,
+      lookup_key: typeof lk === "string" ? lk : lk === null ? null : undefined,
+    });
+  }
+  return out;
+}
 
 /**
  * Ask Consultant: POST directly to FastAPI `/api/rag/answer` (one hop; faster than Next `/api/chat` proxy).
@@ -104,10 +154,15 @@ export async function postRagAnswer(
         error: msg,
       };
     }
+    const imgsTop = parseConsultantAircraftImages((data as { aircraft_images?: unknown }).aircraft_images);
+    const du = data.data_used && typeof data.data_used === "object" ? (data.data_used as Record<string, unknown>) : null;
+    const imgsFromDu = du ? parseConsultantAircraftImages(du.aircraft_images) : [];
+    const merged = mergeConsultantAircraftImageLists(imgsTop, imgsFromDu);
     return {
       answer: data.answer ?? "",
       sources: Array.isArray(data.sources) ? data.sources : [],
-      data_used: data.data_used && typeof data.data_used === "object" ? data.data_used : null,
+      data_used: du,
+      aircraft_images: merged,
       error: data.error ?? null,
     };
   } finally {
@@ -118,6 +173,8 @@ export async function postRagAnswer(
 export type StreamDonePayload = {
   sources?: unknown[];
   data_used?: Record<string, unknown> | null;
+  /** Same items as ``data_used.aircraft_images`` when present. */
+  aircraft_images?: ConsultantAircraftImage[];
   error?: string | null;
 };
 
@@ -191,9 +248,16 @@ export async function postRagAnswerStream(
           if (ev.type === "status" && ev.message) options.onStatus?.(ev.message);
           if (ev.type === "error" && ev.message) options.onError?.(ev.message);
           if (ev.type === "done") {
+            const du = ev.data_used ?? null;
+            const fromPayload = parseConsultantAircraftImages(
+              (ev as { aircraft_images?: unknown }).aircraft_images
+            );
+            const fromDu = du && typeof du === "object" ? parseConsultantAircraftImages(du.aircraft_images) : [];
+            const merged = mergeConsultantAircraftImageLists(fromPayload, fromDu);
             options.onDone({
               sources: ev.sources,
-              data_used: ev.data_used ?? null,
+              data_used: du,
+              aircraft_images: merged,
               error: ev.error ?? null,
             });
           }
@@ -341,6 +405,8 @@ export type PhlydataAircraftRow = {
   manufacturer_year: number | null;
   delivery_year: number | null;
   category: string | null;
+  /** Dynamic `csv_*` TEXT columns and other PhlyData fields from Postgres (wide exports). */
+  [key: string]: unknown;
 };
 
 export type PhlydataAircraftResponse = {
