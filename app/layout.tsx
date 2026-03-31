@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import { Manrope } from "next/font/google";
 import "./globals.css";
 import { ThemeProvider } from "@/lib/ThemeContext";
+import { AuthProvider } from "@/contexts/AuthContext";
 
 const manrope = Manrope({
   subsets: ["latin"],
@@ -38,7 +39,7 @@ export default function RootLayout({
       </head>
       <body className="font-sans h-screen overflow-hidden flex flex-col antialiased bg-white text-slate-800 dark:bg-slate-900 dark:text-slate-200 transition-colors duration-200">
         <ThemeProvider>
-          {children}
+          <AuthProvider>{children}</AuthProvider>
         </ThemeProvider>
       </body>
     </html>

@@ -2,6 +2,8 @@
 @tailwind components;
 @tailwind utilities;
 
+@import "react-day-picker/style.css";
+
 /**
  * Theme variables – keep in sync with lib/theme.ts
  * Font: Manrope is loaded via next/font in layout.tsx and exposes --font-manrope.
@@ -114,4 +116,28 @@
 }
 .dark .scrollbar-ui::-webkit-scrollbar-corner {
   background: transparent;
+}
+
+/* react-day-picker popover (UtcDatePickerField) — dark theme */
+.dark .rdp-popover-surface .rdp-root {
+  --rdp-accent-color: #3b82f6;
+  --rdp-accent-background-color: rgba(59, 130, 246, 0.22);
+  color: #f1f5f9;
+}
+.dark .rdp-popover-surface .rdp-day_button {
+  color: #e2e8f0;
+}
+.dark .rdp-popover-surface .rdp-weekday {
+  color: #94a3b8;
+}
+.dark .rdp-popover-surface .rdp-dropdown_root select {
+  background-color: #1e293b;
+  color: #f1f5f9;
+  border: 1px solid #475569;
+  border-radius: 0.375rem;
+  padding: 0.125rem 0.25rem;
+}
+.dark .rdp-popover-surface .rdp-button_next,
+.dark .rdp-popover-surface .rdp-button_previous {
+  color: #cbd5e1;
 }

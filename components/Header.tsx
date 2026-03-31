@@ -3,9 +3,13 @@
 import Link from "next/link";
 import { Hexagon, Moon, Sun } from "lucide-react";
 import { useTheme } from "@/lib/ThemeContext";
+import { useAuth } from "@/contexts/AuthContext";
+import { userHasStaffAccess, userHasSuperAdminAccess } from "@/lib/auth-api";
 
 export default function Header() {
   const { theme, toggleTheme } = useTheme();
+  const { user, loading, logout } = useAuth();
+  const staff = userHasStaffAccess(user);
 
   return (
     <header className="sticky top-0 z-50 flex-shrink-0 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700 transition-colors duration-200">
@@ -21,7 +25,61 @@ export default function Header() {
             HyeAero<span className="text-accent">.AI</span>
           </span>
         </Link>
-        <div className="flex items-center gap-2 sm:gap-3">
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+          {!loading && staff && (
+            <>
+              <Link
+                href="/admin/users"
+                className="hidden sm:inline text-xs font-medium text-slate-600 dark:text-slate-400 hover:text-accent truncate max-w-[7rem]"
+              >
+                Users
+              </Link>
+              <Link
+                href="/admin/queries"
+                className="hidden sm:inline text-xs font-medium text-slate-600 dark:text-slate-400 hover:text-accent truncate max-w-[7rem]"
+              >
+                Queries
+              </Link>
+              {userHasSuperAdminAccess(user) && (
+                <Link
+                  href="/admin/admins"
+                  className="hidden md:inline text-xs font-medium text-amber-700 dark:text-amber-400 hover:underline truncate max-w-[6rem]"
+                >
+                  Admins
+                </Link>
+              )}
+            </>
+          )}
+          {!loading && !user && (
+            <>
+              <Link
+                href="/login"
+                className="text-xs sm:text-sm font-medium text-slate-600 dark:text-slate-300 hover:text-accent"
+              >
+                Sign in
+              </Link>
+              <Link
+                href="/signup"
+                className="text-xs sm:text-sm font-medium text-accent hover:underline"
+              >
+                Sign up
+              </Link>
+            </>
+          )}
+          {!loading && user && user.status === "active" && (
+            <span className="hidden md:inline text-xs text-slate-500 dark:text-slate-400 truncate max-w-[10rem]">
+              {user.email}
+            </span>
+          )}
+          {!loading && user && user.status === "active" && (
+            <button
+              type="button"
+              onClick={logout}
+              className="text-xs font-medium text-slate-600 dark:text-slate-400 hover:text-accent"
+            >
+              Sign out
+            </button>
+          )}
           <button
             type="button"
             onClick={toggleTheme}

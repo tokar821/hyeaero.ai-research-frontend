@@ -10,6 +10,9 @@ Interactive **Research Dashboard** for [HyeAero.com/research](https://www.hye.ae
 - **PhlyData Aircraft** — Paginated aircraft list (searchable by serial, registration, model, etc.) with a slide-over **Owner details** panel combining listings, FAA registry, and ZoomInfo company enrichment (website, phones, address, revenue, employees, industries, social URLs, etc.).
 - **Tabs & layout** — Desktop dashboard with tabbed navigation and mobile bottom nav. Sign in / Sign out is a demo-only state switch; hook into real auth in production.
 - **(Hidden UI) Market Comparison** — The backend and internal tab logic still support Market Comparison, but the tab is intentionally hidden from the navigation. You can re-enable it later without changing the API.
+- **Admin: Consultant query log** — **`/admin/queries`** (admin / super_admin JWT) lists logged questions once Postgres is configured on the API. Legacy `X-Admin-Key` still works for non-browser tools. Set `CONSULTANT_QUERY_ANALYTICS_ENABLED=0` on the API only if you want to disable new log rows.
+- **Sign in / Sign up** — **`/login`**, **`/signup`**. New accounts are **pending** until an admin sets **`active`** in **`/admin/users`**. Dashboard requires **active** status (`/`); **`/pending`** explains the wait.
+- **User management** — **`/admin/users`** for **admin** and **super_admin**: add users (admins create **pending** only), edit role (`user` / `admin`), reset password, delete. **Only super admin** can change **status** (activate sign-ups or reject). **Super admin** also has **`/admin/admins`** (admin-role roster).
 
 ## Setup (local)
 
@@ -22,6 +25,10 @@ Create `.env.local`:
 
 ```env
 NEXT_PUBLIC_API_URL=http://localhost:8000
+# Optional: same value as backend CONSULTANT_ANALYTICS_ADMIN_KEY for /admin/queries (never use NEXT_PUBLIC_ for this).
+# CONSULTANT_ANALYTICS_ADMIN_KEY=
+# Optional: private API base for server-side admin proxy (defaults to NEXT_PUBLIC_API_URL).
+# INTERNAL_API_URL=http://localhost:8000
 # Optional: browser wait for POST /api/rag/answer (ms). Consultant runs LLM+Tavily+RAG; default 180000.
 # NEXT_PUBLIC_RAG_TIMEOUT_MS=180000
 # Optional: show a canned demo reply if backend is offline
@@ -43,6 +50,8 @@ NEXT_PUBLIC_DEMO_CHAT=false
    ```
 
 Open [http://localhost:3000](http://localhost:3000).
+
+If the terminal fills with `GET /_next/static/... 404` and the UI breaks, stop dev, delete the `frontend/.next` folder, run `npm run dev` once, then hard-refresh the browser. Do not run two dev servers on port 3000. As an alternative bundler you can try `npm run dev:turbo`.
 
 ## Backend connection
 

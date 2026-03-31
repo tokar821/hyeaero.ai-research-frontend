@@ -3,6 +3,8 @@
  * Base URL: NEXT_PUBLIC_API_URL (see README; e.g. http://localhost:8000 for local API)
  */
 
+import { authHeaderRecord } from "./auth-token";
+
 export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://88.99.198.243";
 
 const API_URL = API_BASE_URL;
@@ -140,7 +142,7 @@ export async function postRagAnswer(
   try {
     const res = await fetch(`${API_URL}/api/rag/answer`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...authHeaderRecord() },
       body: JSON.stringify(body),
       signal: controller.signal,
     });
@@ -202,7 +204,7 @@ export async function postRagAnswerStream(
   try {
     const res = await fetch(`${API_URL}/api/rag/answer/stream`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream", ...authHeaderRecord() },
       body: JSON.stringify(body),
       signal: controller.signal,
     });
