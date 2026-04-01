@@ -282,7 +282,7 @@ export async function postRagAnswerStream(
   } catch (e) {
     const isTimeout = e instanceof Error && e.name === "AbortError";
     const msg = isTimeout
-      ? "The request took too long. Try a shorter question or increase NEXT_PUBLIC_RAG_TIMEOUT_MS."
+      ? "This answer was taking longer than usual, so we stopped waiting. Try a shorter or more specific question, or try again in a moment."
       : e instanceof Error
         ? e.message
         : "Stream failed";

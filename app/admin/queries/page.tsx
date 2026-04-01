@@ -22,6 +22,8 @@ export type ConsultantQueryLogItem = {
   user_agent?: string | null;
   user_id?: number | null;
   user_email?: string | null;
+  user_full_name?: string | null;
+  answer_text?: string | null;
 };
 
 type ListResponse = {
@@ -213,7 +215,7 @@ function AdminConsultantQueriesInner() {
                   type="search"
                   value={q}
                   onChange={(e) => setQ(e.target.value)}
-                  placeholder="Substring in question…"
+                  placeholder="Question or answer text…"
                   className="mt-1 w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 px-2 py-1.5 text-sm"
                 />
               </label>
@@ -262,8 +264,9 @@ function AdminConsultantQueriesInner() {
                     </th>
                     <th className="p-2 whitespace-nowrap">When (UTC)</th>
                     <th className="p-2 whitespace-nowrap">Type</th>
-                    <th className="p-2 whitespace-nowrap">User</th>
+                    <th className="p-2 whitespace-nowrap min-w-[7rem]">User</th>
                     <th className="p-2">Question</th>
+                    <th className="p-2 min-w-[12rem]">Answer</th>
                     <th className="p-2 whitespace-nowrap">Hist</th>
                     <th className="p-2 w-10" />
                   </tr>
@@ -283,11 +286,35 @@ function AdminConsultantQueriesInner() {
                         {row.created_at.replace("T", " ").replace("+00:00", "Z")}
                       </td>
                       <td className="p-2 whitespace-nowrap text-xs font-mono text-accent">{row.endpoint}</td>
-                      <td className="p-2 text-xs text-slate-600 dark:text-slate-400 max-w-[8rem] truncate">
-                        {row.user_email || (row.user_id != null ? `#${row.user_id}` : "—")}
+                      <td className="p-2 text-xs text-slate-600 dark:text-slate-400 max-w-[10rem]">
+                        <div className="truncate" title={row.user_full_name || row.user_email || ""}>
+                          {row.user_full_name ? (
+                            <>
+                              <span className="font-medium text-slate-700 dark:text-slate-300 block truncate">
+                                {row.user_full_name}
+                              </span>
+                              <span className="block truncate text-slate-500">{row.user_email || "—"}</span>
+                            </>
+                          ) : (
+                            <span className="truncate block">
+                              {row.user_email || (row.user_id != null ? `#${row.user_id}` : "—")}
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="p-2 text-slate-800 dark:text-slate-200 max-w-xl break-words whitespace-pre-wrap">
                         {row.query_text}
+                      </td>
+                      <td className="p-2 text-slate-700 dark:text-slate-300 max-w-xl break-words whitespace-pre-wrap text-xs">
+                        {row.answer_text ? (
+                          <span title={row.answer_text}>
+                            {row.answer_text.length > 400
+                              ? `${row.answer_text.slice(0, 400)}…`
+                              : row.answer_text}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400 italic">—</span>
+                        )}
                       </td>
                       <td className="p-2 text-xs text-slate-500">{row.history_turn_count}</td>
                       <td className="p-2">

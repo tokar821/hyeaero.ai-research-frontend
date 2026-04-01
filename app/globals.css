@@ -141,3 +141,108 @@
 .dark .rdp-popover-surface .rdp-button_previous {
   color: #cbd5e1;
 }
+
+/* Ask Consultant — loading (spinner + typing dots + thin activity bar) */
+@keyframes consultant-spinner-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+/* Explicit spin so Lucide SVG + all browsers animate (Tailwind animate-spin can miss SVG) */
+.consultant-spinner-icon {
+  display: block;
+  flex-shrink: 0;
+  transform-origin: 50% 50%;
+  animation: consultant-spinner-rotate 0.75s linear infinite;
+}
+
+@keyframes consultant-dot-wave {
+  0%,
+  40%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  20% {
+    transform: translateY(-5px);
+    opacity: 1;
+  }
+}
+.consultant-typing-dot {
+  display: inline-block;
+  animation: consultant-dot-wave 1s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+.consultant-typing-dot:nth-child(1) {
+  animation-delay: 0s;
+}
+.consultant-typing-dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.consultant-typing-dot:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes consultant-bar-sweep {
+  0% {
+    transform: translateX(-100%);
+    opacity: 0.35;
+  }
+  45% {
+    opacity: 0.95;
+  }
+  100% {
+    transform: translateX(350%);
+    opacity: 0.35;
+  }
+}
+.consultant-loading-bar-track {
+  height: 3px;
+  border-radius: 9999px;
+  background-color: rgba(148, 163, 184, 0.35);
+  overflow: hidden;
+}
+.dark .consultant-loading-bar-track {
+  background-color: rgba(71, 85, 105, 0.55);
+}
+.consultant-loading-bar-fill {
+  height: 100%;
+  width: 38%;
+  border-radius: 9999px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--accent-light),
+    var(--accent),
+    var(--accent-light),
+    transparent
+  );
+  animation: consultant-bar-sweep 1.35s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+
+@keyframes consultant-dot-pulse-soft {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.92);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .consultant-spinner-icon {
+    animation-duration: 1.6s;
+  }
+  .consultant-typing-dot {
+    animation-name: consultant-dot-pulse-soft;
+    animation-duration: 1.2s;
+    transform: none;
+  }
+  .consultant-loading-bar-fill {
+    animation-duration: 2.2s;
+  }
+}

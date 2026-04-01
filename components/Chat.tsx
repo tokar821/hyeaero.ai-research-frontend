@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import { jsPDF } from "jspdf";
-import { Bot, Send, Download } from "lucide-react";
+import { Bot, Send, Download, Loader2 } from "lucide-react";
 import {
   mergeConsultantAircraftImageLists,
   parseConsultantAircraftImages,
@@ -298,6 +298,43 @@ function AircraftImageGallery({ images }: { images: ConsultantAircraftImage[] })
   );
 }
 
+/** ChatGPT-style loading: spinner, typing dots, thin activity bar, backend status line */
+function ConsultantLoadingIndicator({
+  status,
+  compact,
+}: {
+  status?: string;
+  /** Minimal row (e.g. fallback before assistant message is mounted) */
+  compact?: boolean;
+}) {
+  const label = status?.trim() || "Working on your answer…";
+  return (
+    <div
+      className={`flex flex-col gap-2.5 ${compact ? "py-0.5" : "py-1"}`}
+      role="status"
+      aria-live="polite"
+      aria-busy="true"
+      aria-label={label}
+    >
+      <div className="flex items-center gap-3">
+        <Loader2
+          className="consultant-spinner-icon h-[18px] w-[18px] sm:h-5 sm:w-5 text-accent"
+          aria-hidden
+        />
+        <div className="flex items-center gap-[5px] h-6" aria-hidden>
+          <span className="consultant-typing-dot w-2 h-2 rounded-full bg-slate-500 dark:bg-slate-400" />
+          <span className="consultant-typing-dot w-2 h-2 rounded-full bg-slate-500 dark:bg-slate-400" />
+          <span className="consultant-typing-dot w-2 h-2 rounded-full bg-slate-500 dark:bg-slate-400" />
+        </div>
+      </div>
+      <div className="consultant-loading-bar-track w-full max-w-[220px] sm:max-w-[280px]" aria-hidden>
+        <div className="consultant-loading-bar-fill" />
+      </div>
+      <p className="text-xs text-slate-500 dark:text-slate-400 leading-snug min-h-[1rem]">{label}</p>
+    </div>
+  );
+}
+
 function wrapText(doc: jsPDF, text: string, x: number, y: number, maxWidth: number, lineHeight: number): number {
   const lines = doc.splitTextToSize(text, maxWidth);
   lines.forEach((line: string) => {
@@ -462,8 +499,8 @@ export default function Chat({ onQuerySent, suggestedQuery, onSuggestedQueryCons
       const isTimeout = e instanceof Error && e.name === "AbortError";
       const shouldRetry = !isTimeout && retryCount < MAX_RETRIES;
       const errorMsg = isTimeout
-        ? "The request took too long. Try a shorter question, or increase NEXT_PUBLIC_RAG_TIMEOUT_MS (see README)."
-        : "Sorry, the request failed. Check NEXT_PUBLIC_API_URL, CORS, and that the backend is running (see README).";
+        ? "This answer was taking longer than usual, so we stopped waiting. Try a shorter or more specific question, or try again in a moment."
+        : "Sorry, something went wrong. Check your connection and that the app is available, then try again.";
       setMessages((prev) =>
         prev.map((m) =>
           m.id === assistantId
@@ -523,12 +560,12 @@ export default function Chat({ onQuerySent, suggestedQuery, onSuggestedQueryCons
                 <div className="max-w-[85%] space-y-1.5">
                   <div className="rounded-2xl rounded-bl-md bg-white dark:bg-slate-800 px-5 py-3.5 text-slate-800 dark:text-slate-200 text-[15px] leading-relaxed shadow-sm border border-slate-100 dark:border-slate-600 whitespace-pre-wrap">
                     {!m.content && (m.streaming || m.status) ? (
-                      <span className="text-slate-500 dark:text-slate-400">{m.status || "Thinking…"}</span>
+                      <ConsultantLoadingIndicator status={m.status} />
                     ) : null}
                     {m.content}
-                    {m.streaming ? (
+                    {m.streaming && m.content ? (
                       <span
-                        className="inline-block w-0.5 h-4 ml-1 bg-accent align-middle animate-pulse rounded-sm"
+                        className="inline-block w-0.5 h-4 ml-0.5 bg-accent align-middle animate-pulse rounded-sm"
                         aria-hidden
                       />
                     ) : null}
@@ -557,11 +594,11 @@ export default function Chat({ onQuerySent, suggestedQuery, onSuggestedQueryCons
           )}
           {isLoading && !messages.some((m) => m.streaming) && (
             <div className="flex gap-3">
-              <div className="w-8 h-8 rounded-full bg-accent flex-shrink-0 flex items-center justify-center text-white animate-pulse" aria-hidden>
+              <div className="w-8 h-8 rounded-full bg-accent flex-shrink-0 flex items-center justify-center text-white" aria-hidden>
                 <Bot className="w-4 h-4" />
               </div>
-              <div className="rounded-2xl rounded-bl-md bg-white dark:bg-slate-800 px-5 py-3.5 text-slate-500 dark:text-slate-400 text-[15px] border border-slate-100 dark:border-slate-600 shadow-sm">
-                Checking resources…
+              <div className="rounded-2xl rounded-bl-md bg-white dark:bg-slate-800 px-5 py-3.5 border border-slate-100 dark:border-slate-600 shadow-sm min-w-0 max-w-[85%]">
+                <ConsultantLoadingIndicator status="Starting…" compact />
               </div>
             </div>
           )}
