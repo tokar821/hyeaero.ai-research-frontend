@@ -321,8 +321,10 @@ export default function DashboardCenterContent(props: DashboardCenterContentProp
             <Bot className="w-5 h-5" />
           </div>
           <div>
-            <h2 className="font-heading font-semibold text-slate-900 dark:text-slate-100">AI Research Consultant</h2>
-            <p className="text-xs text-slate-500 dark:text-slate-400">Checking resources</p>
+            <h2 className="font-heading font-semibold text-slate-900 dark:text-slate-100">HyeAero.AI</h2>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              Aviation intelligence assistant for Hye Aero — missions, specs, ownership, market insights.
+            </p>
           </div>
         </div>
         <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
@@ -718,7 +720,7 @@ export default function DashboardCenterContent(props: DashboardCenterContentProp
               {resaleLoading && (
                 <div className="mt-3 rounded-lg border border-slate-200 dark:border-slate-600 bg-slate-50/50 dark:bg-slate-800/80 p-4 flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
                   <Loader2 className="w-4 h-4 animate-spin text-accent flex-shrink-0" />
-                  Checking resources…
+                  Drafting your resale advisory brief…
                 </div>
               )}
               {resaleResult && !resaleLoading && (

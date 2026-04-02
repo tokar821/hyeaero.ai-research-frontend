@@ -23,7 +23,7 @@ type Message = {
   aircraft_images?: ConsultantAircraftImage[];
   /** True while SSE tokens are arriving (ChatGPT-style). */
   streaming?: boolean;
-  /** Short status before first token (e.g. "Searching sources…"). */
+  /** Short status before first token (progress line from the assistant). */
   status?: string;
 };
 
@@ -49,29 +49,9 @@ function generateId(): string {
   return `msg-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 }
 
-const WELCOME = `Hello! I'm your AI research consultant, checking resources for you. I can help you with:
+const WELCOME = `Hello — I'm HyeAero.AI, the aviation intelligence assistant for Hye Aero.
 
-• Aircraft model research and specifications
-• Market value comparisons and trends
-• Price estimations and valuations
-• Resale potential analysis`;
-
-/** Footer under assistant message — avoid summing all numeric data_used keys (that inflated "74 sources"). */
-function formatDataUsed(data_used: DataUsed): string {
-  const d = data_used as unknown as Record<string, unknown>;
-  const parts: string[] = [];
-  const nPhly = Number(d.phlydata_aircraft_rows || 0);
-  const nList = Number(d.consultant_internal_listings || 0);
-  const nSales = Number(d.consultant_internal_sales_comps || 0);
-  const nTav = Number(d.tavily_results || 0);
-  const nImg = Number(d.consultant_aircraft_image_count ?? 0);
-  if (nPhly > 0) parts.push("PhlyData/FAA");
-  if (nList > 0 || nSales > 0) parts.push("internal listings/sales");
-  if (nTav > 0) parts.push("web search");
-  if (nImg > 0) parts.push(`${nImg} photo URL${nImg === 1 ? "" : "s"}`);
-  if (parts.length === 0) return "";
-  return `Sources used: ${parts.join(" · ")}.`;
-}
+I can help with aircraft missions, specifications, ownership research, market insights, comparisons, and buyer advisory. What would you like to work on?`;
 
 function sourceLabel(src: string | undefined): string {
   const s = (src || "").toLowerCase();
@@ -307,7 +287,7 @@ function ConsultantLoadingIndicator({
   /** Minimal row (e.g. fallback before assistant message is mounted) */
   compact?: boolean;
 }) {
-  const label = status?.trim() || "Working on your answer…";
+  const label = status?.trim() || "Preparing your consultant response…";
   return (
     <div
       className={`flex flex-col gap-2.5 ${compact ? "py-0.5" : "py-1"}`}
@@ -433,7 +413,7 @@ export default function Chat({ onQuerySent, suggestedQuery, onSuggestedQueryCons
         role: "assistant",
         content: "",
         streaming: true,
-        status: "Checking resources…",
+        status: "Reviewing your request and assembling sources…",
       },
     ]);
 
@@ -583,11 +563,6 @@ export default function Chat({ onQuerySent, suggestedQuery, onSuggestedQueryCons
                       full registration or serial, or phrases like “photos” / “images” with the tail number.
                     </p>
                   ) : null}
-                  {m.data_used && Object.keys(m.data_used).length > 0 && (
-                    <p className="pl-1 text-xs text-slate-500 dark:text-slate-400 italic">
-                      {formatDataUsed(m.data_used)}
-                    </p>
-                  )}
                 </div>
               </div>
             )
@@ -598,7 +573,7 @@ export default function Chat({ onQuerySent, suggestedQuery, onSuggestedQueryCons
                 <Bot className="w-4 h-4" />
               </div>
               <div className="rounded-2xl rounded-bl-md bg-white dark:bg-slate-800 px-5 py-3.5 border border-slate-100 dark:border-slate-600 shadow-sm min-w-0 max-w-[85%]">
-                <ConsultantLoadingIndicator status="Starting…" compact />
+                <ConsultantLoadingIndicator status="Initializing your session…" compact />
               </div>
             </div>
           )}
