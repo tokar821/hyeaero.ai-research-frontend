@@ -172,6 +172,30 @@ export async function postRagAnswer(
   }
 }
 
+export type ConsultantQuota = {
+  unlimited: boolean;
+  limit: number | null;
+  used: number | null;
+  remaining: number | null;
+};
+
+export async function getConsultantQuota(): Promise<ConsultantQuota> {
+  const res = await fetch(`${API_URL}/api/rag/consultant-quota`, {
+    headers: { ...authHeaderRecord() },
+    cache: "no-store",
+  });
+  const data = (await res.json().catch(() => ({}))) as ConsultantQuota;
+  if (!res.ok) {
+    return { unlimited: true, limit: null, used: null, remaining: null };
+  }
+  return {
+    unlimited: Boolean(data.unlimited),
+    limit: typeof data.limit === "number" ? data.limit : null,
+    used: typeof data.used === "number" ? data.used : null,
+    remaining: typeof data.remaining === "number" ? data.remaining : null,
+  };
+}
+
 export type StreamDonePayload = {
   sources?: unknown[];
   data_used?: Record<string, unknown> | null;

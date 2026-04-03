@@ -1,14 +1,17 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback, type KeyboardEvent } from "react";
 import { jsPDF } from "jspdf";
-import { Bot, Send, Download, Loader2 } from "lucide-react";
+import { Bot, Send, Download, Loader2, Pencil, Plus, MessageSquare } from "lucide-react";
 import {
+  getConsultantQuota,
   mergeConsultantAircraftImageLists,
   parseConsultantAircraftImages,
   postRagAnswerStream,
   type ConsultantAircraftImage,
 } from "@/lib/api";
+import { useAuth } from "@/contexts/AuthContext";
+import { isStaffRole } from "@/lib/auth-api";
 
 export type SourceItem = { entity_type?: string; entity_id?: string | null; score?: number };
 export type DataUsed = Record<string, number | string | unknown>;
@@ -26,6 +29,72 @@ type Message = {
   /** Short status before first token (progress line from the assistant). */
   status?: string;
 };
+
+type PersistedMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  sources?: SourceItem[];
+  data_used?: DataUsed | null;
+  aircraft_images?: ConsultantAircraftImage[];
+};
+
+type SavedChatSession = {
+  id: string;
+  title: string;
+  updatedAt: number;
+  messages: PersistedMessage[];
+};
+
+const LS_CHATS = "hyeaero_consultant_chats_v1";
+const LS_ACTIVE = "hyeaero_consultant_active_chat_id_v1";
+const MAX_STORED_CHATS = 40;
+
+function toPersistedMessages(messages: Message[]): PersistedMessage[] {
+  return messages
+    .filter((m) => !m.streaming && (m.content.trim() || m.role === "user"))
+    .map((m) => ({
+      id: m.id,
+      role: m.role,
+      content: m.content,
+      sources: m.sources,
+      data_used: m.data_used ?? null,
+      aircraft_images: m.aircraft_images,
+    }));
+}
+
+function rehydrateMessages(p: PersistedMessage[]): Message[] {
+  return p.map((m) => ({
+    id: m.id,
+    role: m.role,
+    content: m.content,
+    sources: m.sources,
+    data_used: m.data_used ?? undefined,
+    aircraft_images: m.aircraft_images,
+    streaming: false,
+  }));
+}
+
+function chatTitleFromMessages(messages: Message[]): string {
+  const u = messages.find((m) => m.role === "user" && m.content.trim());
+  if (!u) return "New chat";
+  const t = u.content.trim().replace(/\s+/g, " ");
+  return t.length > 44 ? `${t.slice(0, 41)}…` : t;
+}
+
+function mergeSession(
+  sessions: SavedChatSession[],
+  chatId: string,
+  messages: Message[]
+): SavedChatSession[] {
+  const persisted = toPersistedMessages(messages);
+  const title = chatTitleFromMessages(messages);
+  const updatedAt = Date.now();
+  const rest = sessions.filter((s) => s.id !== chatId);
+  const next: SavedChatSession[] = [...rest, { id: chatId, title, updatedAt, messages: persisted }];
+  next.sort((a, b) => b.updatedAt - a.updatedAt);
+  return next.slice(0, MAX_STORED_CHATS);
+}
 
 type ChatProps = {
   onQuerySent?: (query: string) => void;
@@ -324,7 +393,45 @@ function wrapText(doc: jsPDF, text: string, x: number, y: number, maxWidth: numb
   return y;
 }
 
-function downloadReport(messages: Message[]) {
+/** Fetch remote image for PDF; CORS must allow it or we fall back to URL text only. */
+async function imageUrlToPdfFormat(url: string): Promise<{ fmt: "JPEG" | "PNG"; data: string } | null> {
+  try {
+    const res = await fetch(url, { mode: "cors", credentials: "omit" });
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    if (!blob.size || blob.size > 4_000_000) return null;
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const r = new FileReader();
+      r.onloadend = () => resolve(String(r.result || ""));
+      r.onerror = () => reject(new Error("read"));
+      r.readAsDataURL(blob);
+    });
+    const low = dataUrl.toLowerCase();
+    if (low.startsWith("data:image/png")) return { fmt: "PNG", data: dataUrl };
+    if (low.startsWith("data:image/jpeg") || low.startsWith("data:image/jpg"))
+      return { fmt: "JPEG", data: dataUrl };
+    if (low.startsWith("data:image/webp")) {
+      try {
+        const bmp = await createImageBitmap(blob);
+        const c = document.createElement("canvas");
+        c.width = bmp.width;
+        c.height = bmp.height;
+        const ctx = c.getContext("2d");
+        if (!ctx) return null;
+        ctx.drawImage(bmp, 0, 0);
+        const jpeg = c.toDataURL("image/jpeg", 0.85);
+        return { fmt: "JPEG", data: jpeg };
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function downloadReport(messages: Message[]) {
   const doc = new jsPDF({ format: "a4", unit: "mm" });
   const margin = 20;
   const pageWidth = doc.internal.pageSize.getWidth();
@@ -352,16 +459,39 @@ function downloadReport(messages: Message[]) {
     if (m.role === "assistant" && m.aircraft_images?.length) {
       y += lineHeight * 0.5;
       doc.setFont("helvetica", "bold");
-      doc.text("Image URLs (open in browser):", margin, y);
+      doc.text("Aircraft images:", margin, y);
       y += lineHeight;
       doc.setFont("helvetica", "normal");
-      for (const im of m.aircraft_images.slice(0, 12)) {
-        if (y > 275) {
+      const imgW = Math.min(maxWidth, 100);
+      for (const im of m.aircraft_images.slice(0, 8)) {
+        if (y > 200) {
           doc.addPage();
           y = margin;
         }
-        const line = `${sourceLabel(im.source)} — ${im.url}`;
-        y = wrapText(doc, line, margin, y, maxWidth, lineHeight * 0.85);
+        const cap = `${sourceLabel(im.source)}${displayImageAlt(im.description) ? ` — ${displayImageAlt(im.description)}` : ""}`;
+        y = wrapText(doc, cap, margin, y, maxWidth, lineHeight * 0.85);
+        const loaded = await imageUrlToPdfFormat(im.url);
+        if (loaded) {
+          try {
+            let h = 45;
+            try {
+              const props = (doc as unknown as { getImageProperties: (s: string) => { height: number; width: number } }).getImageProperties(loaded.data);
+              h = (imgW * props.height) / Math.max(props.width, 1);
+            } catch {
+              h = 45;
+            }
+            if (y + h > 285) {
+              doc.addPage();
+              y = margin;
+            }
+            doc.addImage(loaded.data, loaded.fmt, margin, y, imgW, Math.min(h, 80));
+            y += Math.min(h, 80) + lineHeight;
+          } catch {
+            y = wrapText(doc, im.url, margin, y, maxWidth, lineHeight * 0.85);
+          }
+        } else {
+          y = wrapText(doc, `(Open: ${im.url})`, margin, y, maxWidth, lineHeight * 0.85);
+        }
       }
       y += lineHeight * 0.5;
     }
@@ -371,13 +501,139 @@ function downloadReport(messages: Message[]) {
 
 const MAX_RETRIES = 1;
 
+const WELCOME_MSG: Message = { id: "0", role: "assistant", content: WELCOME, streaming: false };
+
+function buildHistoryForApi(msgs: Message[]): Array<{ role: string; content: string }> {
+  return msgs
+    .filter((m) => !m.streaming && (m.role === "user" || m.content.trim()))
+    .slice(-12)
+    .map((m) => ({ role: m.role, content: m.content }));
+}
+
 export default function Chat({ onQuerySent, suggestedQuery, onSuggestedQueryConsumed }: ChatProps) {
-  const [messages, setMessages] = useState<Message[]>([
-    { id: "0", role: "assistant", content: WELCOME },
-  ]);
+  const { user, loading: authLoading } = useAuth();
+  const staff = user ? isStaffRole(user.role) : false;
+
+  const [hydrated, setHydrated] = useState(false);
+  const [sessions, setSessions] = useState<SavedChatSession[]>([]);
+  const [activeChatId, setActiveChatId] = useState("");
+  const [messages, setMessages] = useState<Message[]>([WELCOME_MSG]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState("");
+  const [quota, setQuota] = useState<Awaited<ReturnType<typeof getConsultantQuota>> | null>(null);
+  const [pdfBusy, setPdfBusy] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = localStorage.getItem(LS_CHATS);
+      let list: SavedChatSession[] = raw ? JSON.parse(raw) : [];
+      if (!Array.isArray(list)) list = [];
+      let aid = localStorage.getItem(LS_ACTIVE) || "";
+      if (!list.length) {
+        const id = generateId();
+        const initialMsgs = toPersistedMessages([WELCOME_MSG]);
+        list = [{ id, title: "New chat", updatedAt: Date.now(), messages: initialMsgs }];
+        aid = id;
+      } else if (!aid || !list.some((s) => s.id === aid)) {
+        aid = list[0]!.id;
+      }
+      const active = list.find((s) => s.id === aid)!;
+      setSessions(list);
+      setActiveChatId(aid);
+      setMessages(rehydrateMessages(active.messages));
+    } catch {
+      const id = generateId();
+      const initialMsgs = toPersistedMessages([WELCOME_MSG]);
+      setSessions([{ id, title: "New chat", updatedAt: Date.now(), messages: initialMsgs }]);
+      setActiveChatId(id);
+      setMessages(rehydrateMessages(initialMsgs));
+    }
+    setHydrated(true);
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated || typeof window === "undefined") return;
+    const h = window.setTimeout(() => {
+      try {
+        setSessions((prev) => {
+          const next = mergeSession(prev, activeChatId, messages);
+          localStorage.setItem(LS_CHATS, JSON.stringify(next));
+          localStorage.setItem(LS_ACTIVE, activeChatId);
+          return next;
+        });
+      } catch {
+        /* ignore quota / private mode */
+      }
+    }, 450);
+    return () => window.clearTimeout(h);
+  }, [messages, activeChatId, hydrated]);
+
+  const refreshQuota = useCallback(async () => {
+    if (staff) {
+      setQuota({ unlimited: true, limit: null, used: null, remaining: null });
+      return;
+    }
+    try {
+      const q = await getConsultantQuota();
+      setQuota(q);
+    } catch {
+      setQuota({ unlimited: true, limit: null, used: null, remaining: null });
+    }
+  }, [staff]);
+
+  useEffect(() => {
+    if (!hydrated || authLoading) return;
+    void refreshQuota();
+  }, [hydrated, authLoading, refreshQuota, user?.id]);
+
+  const switchChat = useCallback(
+    (targetId: string) => {
+      if (!hydrated || targetId === activeChatId) return;
+      setSessions((prev) => {
+        const n = mergeSession(prev, activeChatId, messages);
+        const t = n.find((s) => s.id === targetId);
+        try {
+          localStorage.setItem(LS_CHATS, JSON.stringify(n));
+          localStorage.setItem(LS_ACTIVE, targetId);
+        } catch {
+          /* ignore */
+        }
+        requestAnimationFrame(() => {
+          setActiveChatId(targetId);
+          setMessages(t ? rehydrateMessages(t.messages) : [WELCOME_MSG]);
+          setEditingId(null);
+          setEditDraft("");
+        });
+        return n;
+      });
+    },
+    [hydrated, activeChatId, messages]
+  );
+
+  const newChat = useCallback(() => {
+    if (!hydrated) return;
+    const newId = generateId();
+    setSessions((prev) => {
+      const n = mergeSession(prev, activeChatId, messages);
+      const fresh: Message[] = [WELCOME_MSG];
+      const n2 = mergeSession(n, newId, fresh);
+      try {
+        localStorage.setItem(LS_CHATS, JSON.stringify(n2));
+        localStorage.setItem(LS_ACTIVE, newId);
+      } catch {
+        /* ignore */
+      }
+      return n2;
+    });
+    setActiveChatId(newId);
+    setMessages([WELCOME_MSG]);
+    setEditingId(null);
+    setEditDraft("");
+  }, [hydrated, activeChatId, messages]);
 
   // When user clicks a "Try these" suggestion in the sidebar, fill the input and clear the suggestion
   useEffect(() => {
@@ -392,22 +648,35 @@ export default function Chat({ onQuerySent, suggestedQuery, onSuggestedQueryCons
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, isLoading]);
 
-  const sendMessage = async (retryCount = 0) => {
-    const text = input.trim();
-    if (!text || isLoading) return;
+  const atDailyLimit = Boolean(
+    !staff &&
+      quota &&
+      !quota.unlimited &&
+      quota.remaining !== null &&
+      quota.remaining <= 0
+  );
 
-    const userMsg: Message = { id: generateId(), role: "user", content: text };
-    setMessages((prev) => [...prev, userMsg]);
-    setInput("");
+  const sendMessage = async (
+    retryCount = 0,
+    opts?: { textOverride?: string; priorMessages?: Message[]; clearInput?: boolean }
+  ) => {
+    const text = (opts?.textOverride ?? input).trim();
+    if (!text || isLoading || atDailyLimit) return;
+
+    const clearInput = opts?.clearInput !== false && opts?.textOverride === undefined;
+    if (clearInput) setInput("");
+
     onQuerySent?.(text);
     setIsLoading(true);
 
-    const history = messages
-      .slice(-12)
-      .map((m) => ({ role: m.role, content: m.content }));
     const assistantId = generateId();
-    setMessages((prev) => [
-      ...prev,
+    const userMsg: Message = { id: generateId(), role: "user", content: text };
+    const base = opts?.priorMessages ?? messages;
+    const history = buildHistoryForApi(base);
+
+    setMessages([
+      ...base,
+      userMsg,
       {
         id: assistantId,
         role: "assistant",
@@ -417,103 +686,197 @@ export default function Chat({ onQuerySent, suggestedQuery, onSuggestedQueryCons
       },
     ]);
 
-    try {
-      await postRagAnswerStream(text, {
-        history,
-        onStatus: (message) => {
-          setMessages((prev) =>
-            prev.map((m) => (m.id === assistantId ? { ...m, status: message } : m))
-          );
-        },
-        onDelta: (chunk) => {
-          setMessages((prev) =>
-            prev.map((m) => {
-              if (m.id !== assistantId) return m;
-              const next = (m.content || "") + chunk;
-              return {
-                ...m,
-                content: next,
-                status: next.length > 0 ? undefined : m.status,
-              };
-            })
-          );
-        },
-        onDone: (payload) => {
-          const sources = Array.isArray(payload.sources) ? payload.sources : [];
-          const data_used =
-            payload.data_used && typeof payload.data_used === "object"
-              ? (payload.data_used as DataUsed)
-              : null;
-          const duRec = data_used as Record<string, unknown> | null;
-          const ai = mergeConsultantAircraftImageLists(
-            parseConsultantAircraftImages(payload.aircraft_images),
-            duRec ? parseConsultantAircraftImages(duRec.aircraft_images) : []
-          );
-          const aiOut = ai.length > 0 ? ai : undefined;
-          const err = payload.error;
-          setMessages((prev) =>
-            prev.map((m) => {
-              if (m.id !== assistantId) return m;
-              let content = m.content || "";
-              if (err && !content.trim()) {
-                content = err;
-              } else if (err && content.trim()) {
-                content = `${content}\n\n(${err})`;
-              } else if (!content.trim() && !err) {
-                content = "I couldn't get a response. Please try again.";
-              }
-              return {
-                ...m,
-                content,
-                streaming: false,
-                status: undefined,
-                sources: sources.length ? (sources as SourceItem[]) : undefined,
-                data_used: data_used || undefined,
-                aircraft_images: aiOut,
-              };
-            })
-          );
-        },
-      });
-    } catch (e) {
-      const isTimeout = e instanceof Error && e.name === "AbortError";
-      const shouldRetry = !isTimeout && retryCount < MAX_RETRIES;
-      const errorMsg = isTimeout
-        ? "This answer was taking longer than usual, so we stopped waiting. Try a shorter or more specific question, or try again in a moment."
-        : "Sorry, something went wrong. Check your connection and that the app is available, then try again.";
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === assistantId
-            ? {
-                ...m,
-                content: shouldRetry ? "Retrying…" : errorMsg,
-                streaming: false,
-                status: undefined,
-              }
-            : m
-        )
-      );
-      if (shouldRetry) {
-        setTimeout(() => sendMessage(retryCount + 1), 1500);
+    const runStream = async () => {
+      try {
+        await postRagAnswerStream(text, {
+          history,
+          onStatus: (message) => {
+            setMessages((prev) =>
+              prev.map((m) => (m.id === assistantId ? { ...m, status: message } : m))
+            );
+          },
+          onDelta: (chunk) => {
+            setMessages((prev) =>
+              prev.map((m) => {
+                if (m.id !== assistantId) return m;
+                const next = (m.content || "") + chunk;
+                return {
+                  ...m,
+                  content: next,
+                  status: next.length > 0 ? undefined : m.status,
+                };
+              })
+            );
+          },
+          onDone: (payload) => {
+            const sources = Array.isArray(payload.sources) ? payload.sources : [];
+            const data_used =
+              payload.data_used && typeof payload.data_used === "object"
+                ? (payload.data_used as DataUsed)
+                : null;
+            const duRec = data_used as Record<string, unknown> | null;
+            const ai = mergeConsultantAircraftImageLists(
+              parseConsultantAircraftImages(payload.aircraft_images),
+              duRec ? parseConsultantAircraftImages(duRec.aircraft_images) : []
+            );
+            const aiOut = ai.length > 0 ? ai : undefined;
+            const err = payload.error;
+            setMessages((prev) =>
+              prev.map((m) => {
+                if (m.id !== assistantId) return m;
+                let content = m.content || "";
+                if (err && !content.trim()) {
+                  content = err;
+                } else if (err && content.trim()) {
+                  content = `${content}\n\n(${err})`;
+                } else if (!content.trim() && !err) {
+                  content = "I couldn't get a response. Please try again.";
+                }
+                return {
+                  ...m,
+                  content,
+                  streaming: false,
+                  status: undefined,
+                  sources: sources.length ? (sources as SourceItem[]) : undefined,
+                  data_used: data_used || undefined,
+                  aircraft_images: aiOut,
+                };
+              })
+            );
+            const looksLikeRateLimit =
+              typeof err === "string" &&
+              (err.includes("429") || /daily|limit|quota|too many/i.test(err));
+            if (!err || !looksLikeRateLimit) void refreshQuota();
+          },
+        });
+      } catch (e) {
+        const isTimeout = e instanceof Error && e.name === "AbortError";
+        const shouldRetry = !isTimeout && retryCount < MAX_RETRIES;
+        const errorMsg = isTimeout
+          ? "This answer was taking longer than usual, so we stopped waiting. Try a shorter or more specific question, or try again in a moment."
+          : "Sorry, something went wrong. Check your connection and that the app is available, then try again.";
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId
+              ? {
+                  ...m,
+                  content: shouldRetry ? "Retrying…" : errorMsg,
+                  streaming: false,
+                  status: undefined,
+                }
+              : m
+          )
+        );
+        if (shouldRetry) {
+          setTimeout(() => sendMessage(retryCount + 1, opts), 1500);
+        }
+      } finally {
+        setIsLoading(false);
       }
-    } finally {
-      setIsLoading(false);
-    }
+    };
+
+    void runStream();
   };
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
+  const startEdit = (m: Message) => {
+    if (isLoading || m.streaming) return;
+    setEditingId(m.id);
+    setEditDraft(m.content);
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditDraft("");
+  };
+
+  const commitEdit = async () => {
+    const id = editingId;
+    const draft = editDraft.trim();
+    if (!id || !draft) {
+      cancelEdit();
+      return;
+    }
+    const idx = messages.findIndex((x) => x.id === id);
+    if (idx < 0) {
+      cancelEdit();
+      return;
+    }
+    const prior = messages.slice(0, idx);
+    cancelEdit();
+    await sendMessage(0, { textOverride: draft, priorMessages: prior, clearInput: false });
+  };
+
+  const handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       sendMessage();
     }
   };
 
-  const handleDownloadPdf = () => {
-    downloadReport(messages);
+  const handleDownloadPdf = async () => {
+    if (pdfBusy) return;
+    setPdfBusy(true);
+    try {
+      await downloadReport(messages);
+    } finally {
+      setPdfBusy(false);
+    }
   };
+
+  const orderedSessions = [...sessions].sort((a, b) => b.updatedAt - a.updatedAt);
+
+  if (!hydrated) {
+    return (
+      <div className="flex flex-1 min-h-[200px] items-center justify-center bg-slate-50/50 dark:bg-slate-900/50 text-slate-500 text-sm">
+        Loading chat…
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col flex-1 min-h-0 overflow-hidden bg-slate-50/50 dark:bg-slate-900/50 transition-colors duration-200">
+      <div className="flex-shrink-0 border-b border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-900/90 px-2 sm:px-3 py-2 flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={newChat}
+          disabled={isLoading}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 px-2.5 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-50"
+        >
+          <Plus className="w-3.5 h-3.5" aria-hidden />
+          New chat
+        </button>
+        <div className="flex flex-1 min-w-0 items-center gap-1 overflow-x-auto scrollbar-ui py-0.5">
+          {orderedSessions.map((s) => (
+            <button
+              key={s.id}
+              type="button"
+              onClick={() => switchChat(s.id)}
+              disabled={isLoading}
+              title={s.title}
+              className={`inline-flex items-center gap-1 shrink-0 max-w-[140px] sm:max-w-[200px] rounded-lg px-2 py-1 text-xs border transition-colors ${
+                s.id === activeChatId
+                  ? "border-accent/50 bg-accent/10 text-accent dark:text-accent"
+                  : "border-transparent bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700"
+              } disabled:opacity-50`}
+            >
+              <MessageSquare className="w-3 h-3 shrink-0 opacity-70" aria-hidden />
+              <span className="truncate">{s.title}</span>
+            </button>
+          ))}
+        </div>
+        {!staff && quota && !quota.unlimited && quota.remaining !== null && (
+          <span className="text-[11px] text-slate-500 dark:text-slate-400 whitespace-nowrap">
+            {quota.remaining > 0
+              ? `${quota.remaining} question${quota.remaining === 1 ? "" : "s"} left today`
+              : "Daily limit reached"}
+          </span>
+        )}
+      </div>
+      {atDailyLimit ? (
+        <p className="flex-shrink-0 px-3 sm:px-4 py-2 text-xs text-amber-800 dark:text-amber-200 bg-amber-50 dark:bg-amber-950/40 border-b border-amber-200 dark:border-amber-800">
+          You have reached your daily consultant question limit. It resets at midnight UTC. Admins are not limited.
+        </p>
+      ) : null}
       {/* Only this message area scrolls; input stays fixed at bottom */}
       <div
         className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-3 sm:px-4 py-4 sm:py-6 overscroll-contain scrollbar-ui"
@@ -525,8 +888,52 @@ export default function Chat({ onQuerySent, suggestedQuery, onSuggestedQueryCons
           {messages.map((m) =>
             m.role === "user" ? (
               <div key={m.id} className="flex justify-end gap-3">
-                <div className="max-w-[85%] rounded-2xl rounded-br-md bg-primary dark:bg-primary-light px-5 py-3.5 text-white text-[15px] leading-relaxed shadow-md">
-                  {m.content}
+                <div className="max-w-[85%] rounded-2xl rounded-br-md bg-primary dark:bg-primary-light px-5 py-3.5 text-white text-[15px] leading-relaxed shadow-md space-y-2">
+                  {editingId === m.id ? (
+                    <div className="space-y-2">
+                      <textarea
+                        value={editDraft}
+                        onChange={(e) => setEditDraft(e.target.value)}
+                        rows={3}
+                        className="w-full rounded-lg border border-white/30 bg-white/10 text-white placeholder-white/60 px-3 py-2 text-[15px] focus:outline-none focus:ring-2 focus:ring-white/40"
+                        aria-label="Edit message"
+                      />
+                      <div className="flex gap-2 justify-end">
+                        <button
+                          type="button"
+                          onClick={cancelEdit}
+                          className="text-xs px-2 py-1 rounded-md bg-white/10 hover:bg-white/20"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void commitEdit()}
+                          disabled={!editDraft.trim() || isLoading}
+                          className="text-xs px-2 py-1 rounded-md bg-white text-primary font-medium disabled:opacity-50"
+                        >
+                          Save &amp; resend
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <p className="whitespace-pre-wrap">{m.content}</p>
+                      {!m.streaming && !isLoading ? (
+                        <div className="flex justify-end">
+                          <button
+                            type="button"
+                            onClick={() => startEdit(m)}
+                            className="inline-flex items-center gap-1 text-[11px] text-white/80 hover:text-white"
+                            aria-label="Edit message"
+                          >
+                            <Pencil className="w-3 h-3" />
+                            Edit
+                          </button>
+                        </div>
+                      ) : null}
+                    </>
+                  )}
                 </div>
                 <div className="w-8 h-8 rounded-full bg-primary/20 flex-shrink-0 flex items-center justify-center text-primary text-xs font-semibold" aria-hidden title="You">
                   U
@@ -592,13 +999,13 @@ export default function Chat({ onQuerySent, suggestedQuery, onSuggestedQueryCons
               placeholder="Ask about aircraft models, market values, or comparables…"
               rows={1}
               className="flex-1 min-h-[44px] sm:min-h-[46px] max-h-36 resize-none border-0 bg-transparent px-1 py-2.5 text-[15px] text-slate-800 dark:text-slate-200 placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:ring-0"
-              disabled={isLoading}
+              disabled={isLoading || atDailyLimit}
               aria-label="Message"
             />
             <button
               type="button"
               onClick={() => sendMessage(0)}
-              disabled={!input.trim() || isLoading}
+              disabled={!input.trim() || isLoading || atDailyLimit}
               className="flex-shrink-0 rounded-xl bg-accent p-3 sm:p-2.5 min-h-[44px] min-w-[44px] sm:min-h-0 sm:min-w-0 flex items-center justify-center text-white transition-all duration-200 ease-out hover:bg-accent-light hover:shadow-md focus:outline-none focus:ring-2 focus:ring-accent/40 focus:ring-offset-2 focus:ring-offset-white dark:focus:ring-offset-slate-900 active:scale-95 active:bg-accent-light disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-accent disabled:hover:shadow-none"
               aria-label="Send"
             >
@@ -609,11 +1016,12 @@ export default function Chat({ onQuerySent, suggestedQuery, onSuggestedQueryCons
             <span className="text-xs text-slate-400 dark:text-slate-500">Enter to send · Shift+Enter for new line</span>
             <button
               type="button"
-              onClick={handleDownloadPdf}
-              className="text-xs font-medium text-slate-500 dark:text-slate-400 rounded-md py-1.5 px-2 transition-all duration-200 ease-out hover:text-accent hover:bg-accent/10 dark:hover:bg-accent/20 focus:outline-none focus:ring-2 focus:ring-accent/25 focus:ring-inset active:scale-[0.98] active:bg-accent/15 inline-flex items-center gap-1.5"
+              onClick={() => void handleDownloadPdf()}
+              disabled={pdfBusy}
+              className="text-xs font-medium text-slate-500 dark:text-slate-400 rounded-md py-1.5 px-2 transition-all duration-200 ease-out hover:text-accent hover:bg-accent/10 dark:hover:bg-accent/20 focus:outline-none focus:ring-2 focus:ring-accent/25 focus:ring-inset active:scale-[0.98] active:bg-accent/15 inline-flex items-center gap-1.5 disabled:opacity-50"
             >
               <Download className="w-3.5 h-3.5" />
-              Download PDF report
+              {pdfBusy ? "Building PDF…" : "Download PDF report"}
             </button>
           </div>
         </div>
