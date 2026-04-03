@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback, type KeyboardEvent } from "react";
 import { jsPDF } from "jspdf";
-import { Bot, Send, Download, Loader2, Pencil, Plus, MessageSquare } from "lucide-react";
+import { Bot, Download, GripVertical, Loader2, Pencil, Plus, Send, MessageSquare, X } from "lucide-react";
 import {
   getConsultantQuota,
   mergeConsultantAircraftImageLists,
@@ -82,6 +82,7 @@ function chatTitleFromMessages(messages: Message[]): string {
   return t.length > 44 ? `${t.slice(0, 41)}…` : t;
 }
 
+/** Update or insert session; **array order** is tab order (left → right). New ids are prepended (new chat first). */
 function mergeSession(
   sessions: SavedChatSession[],
   chatId: string,
@@ -90,10 +91,32 @@ function mergeSession(
   const persisted = toPersistedMessages(messages);
   const title = chatTitleFromMessages(messages);
   const updatedAt = Date.now();
-  const rest = sessions.filter((s) => s.id !== chatId);
-  const next: SavedChatSession[] = [...rest, { id: chatId, title, updatedAt, messages: persisted }];
-  next.sort((a, b) => b.updatedAt - a.updatedAt);
-  return next.slice(0, MAX_STORED_CHATS);
+  const row: SavedChatSession = { id: chatId, title, updatedAt, messages: persisted };
+  const idx = sessions.findIndex((s) => s.id === chatId);
+  if (idx < 0) {
+    return [row, ...sessions].slice(0, MAX_STORED_CHATS);
+  }
+  const next = [...sessions];
+  next[idx] = row;
+  return next;
+}
+
+function persistSessionsList(list: SavedChatSession[], activeId: string) {
+  try {
+    localStorage.setItem(LS_CHATS, JSON.stringify(list));
+    localStorage.setItem(LS_ACTIVE, activeId);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Move item from index `from` to index `to` (both refer to positions in the list before the move). */
+function arrayMoveSession<T>(arr: T[], from: number, to: number): T[] {
+  if (from === to || from < 0 || to < 0 || from >= arr.length || to >= arr.length) return [...arr];
+  const next = [...arr];
+  const [it] = next.splice(from, 1);
+  next.splice(to, 0, it!);
+  return next;
 }
 
 type ChatProps = {
@@ -635,6 +658,64 @@ export default function Chat({ onQuerySent, suggestedQuery, onSuggestedQueryCons
     setEditDraft("");
   }, [hydrated, activeChatId, messages]);
 
+  const removeSession = useCallback(
+    (id: string) => {
+      if (!hydrated || isLoading) return;
+      if (!window.confirm("Remove this chat from this browser? You can’t undo this.")) return;
+      setSessions((prev) => {
+        const list = mergeSession(prev, activeChatId, messages);
+        const filtered = list.filter((s) => s.id !== id);
+        if (filtered.length === 0) {
+          const newId = generateId();
+          const freshMsgs = toPersistedMessages([WELCOME_MSG]);
+          const freshList: SavedChatSession[] = [
+            { id: newId, title: "New chat", updatedAt: Date.now(), messages: freshMsgs },
+          ];
+          persistSessionsList(freshList, newId);
+          requestAnimationFrame(() => {
+            setActiveChatId(newId);
+            setMessages([WELCOME_MSG]);
+            setEditingId(null);
+            setEditDraft("");
+          });
+          return freshList;
+        }
+        if (id === activeChatId) {
+          const idx = list.findIndex((s) => s.id === id);
+          const pick =
+            idx > 0 ? list[idx - 1]! : list.length > idx + 1 ? list[idx + 1]! : filtered[0]!;
+          persistSessionsList(filtered, pick.id);
+          requestAnimationFrame(() => {
+            setActiveChatId(pick.id);
+            setMessages(rehydrateMessages(pick.messages));
+            setEditingId(null);
+            setEditDraft("");
+          });
+        } else {
+          persistSessionsList(filtered, activeChatId);
+        }
+        return filtered;
+      });
+    },
+    [hydrated, isLoading, activeChatId, messages]
+  );
+
+  const reorderSessionDrop = useCallback(
+    (draggedId: string, dropTargetId: string) => {
+      if (!hydrated || isLoading || draggedId === dropTargetId) return;
+      setSessions((prev) => {
+        const list = mergeSession(prev, activeChatId, messages);
+        const fromIdx = list.findIndex((s) => s.id === draggedId);
+        const toIdx = list.findIndex((s) => s.id === dropTargetId);
+        if (fromIdx < 0 || toIdx < 0) return prev;
+        const next = arrayMoveSession(list, fromIdx, toIdx);
+        persistSessionsList(next, activeChatId);
+        return next;
+      });
+    },
+    [hydrated, isLoading, activeChatId, messages]
+  );
+
   // When user clicks a "Try these" suggestion in the sidebar, fill the input and clear the suggestion
   useEffect(() => {
     if (suggestedQuery != null && suggestedQuery.trim()) {
@@ -823,8 +904,6 @@ export default function Chat({ onQuerySent, suggestedQuery, onSuggestedQueryCons
     }
   };
 
-  const orderedSessions = [...sessions].sort((a, b) => b.updatedAt - a.updatedAt);
-
   if (!hydrated) {
     return (
       <div className="flex flex-1 min-h-[200px] items-center justify-center bg-slate-50/50 dark:bg-slate-900/50 text-slate-500 text-sm">
@@ -846,22 +925,79 @@ export default function Chat({ onQuerySent, suggestedQuery, onSuggestedQueryCons
           New chat
         </button>
         <div className="flex flex-1 min-w-0 items-center gap-1 overflow-x-auto scrollbar-ui py-0.5">
-          {orderedSessions.map((s) => (
-            <button
+          {sessions.map((s) => (
+            <div
               key={s.id}
-              type="button"
-              onClick={() => switchChat(s.id)}
-              disabled={isLoading}
-              title={s.title}
-              className={`inline-flex items-center gap-1 shrink-0 max-w-[140px] sm:max-w-[200px] rounded-lg px-2 py-1 text-xs border transition-colors ${
+              draggable={!isLoading}
+              onDragStart={(e) => {
+                if ((e.target as HTMLElement).closest("[data-tab-close]")) {
+                  e.preventDefault();
+                  return;
+                }
+                e.dataTransfer.setData("application/x-hyeaero-chat-id", s.id);
+                e.dataTransfer.effectAllowed = "move";
+                (e.currentTarget as HTMLElement).style.opacity = "0.65";
+              }}
+              onDragEnd={(e) => {
+                (e.currentTarget as HTMLElement).style.opacity = "";
+              }}
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "move";
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                const fromId = e.dataTransfer.getData("application/x-hyeaero-chat-id");
+                if (fromId && fromId !== s.id) reorderSessionDrop(fromId, s.id);
+              }}
+              className={`group/tab relative inline-flex shrink-0 items-stretch max-w-[168px] sm:max-w-[228px] rounded-lg border text-xs transition-colors select-none ${
                 s.id === activeChatId
                   ? "border-accent/50 bg-accent/10 text-accent dark:text-accent"
-                  : "border-transparent bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700"
-              } disabled:opacity-50`}
+                  : "border-transparent bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300"
+              } ${isLoading ? "cursor-default" : "cursor-grab active:cursor-grabbing"}`}
+              title="Drag tab to reorder · click title to open"
             >
-              <MessageSquare className="w-3 h-3 shrink-0 opacity-70" aria-hidden />
-              <span className="truncate">{s.title}</span>
-            </button>
+              <span
+                className="flex shrink-0 items-center pl-1 pr-0.5 text-slate-400 dark:text-slate-500"
+                aria-hidden
+              >
+                <GripVertical className="w-3.5 h-3.5 opacity-60" />
+              </span>
+              <div
+                role="button"
+                tabIndex={isLoading ? -1 : 0}
+                onClick={() => !isLoading && switchChat(s.id)}
+                onKeyDown={(e) => {
+                  if (isLoading) return;
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    switchChat(s.id);
+                  }
+                }}
+                title={s.title}
+                className={`inline-flex min-w-0 flex-1 items-center gap-1 rounded-md py-1.5 pl-0.5 pr-6 text-left outline-none hover:bg-black/5 focus-visible:ring-2 focus-visible:ring-accent/40 dark:hover:bg-white/10 ${isLoading ? "pointer-events-none opacity-50" : ""}`}
+                aria-disabled={isLoading}
+              >
+                <MessageSquare className="w-3 h-3 shrink-0 opacity-70" aria-hidden />
+                <span className="truncate">{s.title}</span>
+              </div>
+              <button
+                type="button"
+                data-tab-close
+                draggable={false}
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  removeSession(s.id);
+                }}
+                disabled={isLoading}
+                className="absolute top-0.5 right-0.5 z-10 flex h-5 w-5 items-center justify-center rounded-md text-slate-500 hover:bg-red-100 hover:text-red-600 dark:text-slate-400 dark:hover:bg-red-950/60 dark:hover:text-red-400 disabled:pointer-events-none disabled:opacity-40"
+                aria-label={`Close chat: ${s.title}`}
+                title="Close chat"
+              >
+                <X className="w-3 h-3" strokeWidth={2.5} aria-hidden />
+              </button>
+            </div>
           ))}
         </div>
         {!staff && quota && !quota.unlimited && quota.remaining !== null && (
