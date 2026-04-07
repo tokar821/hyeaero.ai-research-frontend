@@ -4,12 +4,14 @@ import { useState, useRef, useEffect, useCallback, type KeyboardEvent } from "re
 import { jsPDF } from "jspdf";
 import { Bot, Download, GripVertical, Loader2, Pencil, Plus, Send, MessageSquare, X } from "lucide-react";
 import {
+  API_BASE_URL,
   getConsultantQuota,
   mergeConsultantAircraftImageLists,
   parseConsultantAircraftImages,
   postRagAnswerStream,
   type ConsultantAircraftImage,
 } from "@/lib/api";
+import { authHeaderRecord } from "@/lib/auth-token";
 import { useAuth } from "@/contexts/AuthContext";
 import { isStaffRole } from "@/lib/auth-api";
 
@@ -416,39 +418,112 @@ function wrapText(doc: jsPDF, text: string, x: number, y: number, maxWidth: numb
   return y;
 }
 
-/** Fetch remote image for PDF; CORS must allow it or we fall back to URL text only. */
-async function imageUrlToPdfFormat(url: string): Promise<{ fmt: "JPEG" | "PNG"; data: string } | null> {
+type JsPdfWithLink = jsPDF & {
+  textWithLink: (text: string, x: number, y: number, options: { url: string; maxWidth?: number }) => number;
+};
+
+/** Page or image URLs below each aircraft image in the report PDF (clickable where viewers support it). */
+function appendPdfImageSourceLinks(
+  doc: jsPDF,
+  im: ConsultantAircraftImage,
+  margin: number,
+  y: number,
+  maxWidth: number,
+  lineHeight: number
+): number {
+  const page = (im.page_url || "").trim();
+  const img = (im.url || "").trim();
+  const primary = page || img;
+  if (!primary) return y;
+
+  const lh = lineHeight * 0.88;
+  const linkDoc = doc as JsPdfWithLink;
+
+  doc.setFontSize(8);
+  doc.setFont("helvetica", "normal");
+  doc.setTextColor(70, 78, 96);
+  y = wrapText(doc, "Source:", margin, y, maxWidth, lh);
+  doc.setTextColor(15, 80, 170);
   try {
-    const res = await fetch(url, { mode: "cors", credentials: "omit" });
-    if (!res.ok) return null;
-    const blob = await res.blob();
-    if (!blob.size || blob.size > 4_000_000) return null;
-    const dataUrl = await new Promise<string>((resolve, reject) => {
-      const r = new FileReader();
-      r.onloadend = () => resolve(String(r.result || ""));
-      r.onerror = () => reject(new Error("read"));
-      r.readAsDataURL(blob);
-    });
-    const low = dataUrl.toLowerCase();
-    if (low.startsWith("data:image/png")) return { fmt: "PNG", data: dataUrl };
-    if (low.startsWith("data:image/jpeg") || low.startsWith("data:image/jpg"))
-      return { fmt: "JPEG", data: dataUrl };
-    if (low.startsWith("data:image/webp")) {
-      try {
-        const bmp = await createImageBitmap(blob);
-        const c = document.createElement("canvas");
-        c.width = bmp.width;
-        c.height = bmp.height;
-        const ctx = c.getContext("2d");
-        if (!ctx) return null;
-        ctx.drawImage(bmp, 0, 0);
-        const jpeg = c.toDataURL("image/jpeg", 0.85);
-        return { fmt: "JPEG", data: jpeg };
-      } catch {
-        return null;
-      }
+    const linesP = doc.splitTextToSize(primary, maxWidth);
+    linkDoc.textWithLink(primary, margin, y, { url: primary, maxWidth });
+    y += lh * Math.max(1, linesP.length);
+  } catch {
+    y = wrapText(doc, primary, margin, y, maxWidth, lh);
+  }
+
+  if (page && img && page !== img) {
+    doc.setTextColor(70, 78, 96);
+    y = wrapText(doc, "Image file:", margin, y + lh * 0.15, maxWidth, lh);
+    doc.setTextColor(15, 80, 170);
+    try {
+      const linesI = doc.splitTextToSize(img, maxWidth);
+      linkDoc.textWithLink(img, margin, y, { url: img, maxWidth });
+      y += lh * Math.max(1, linesI.length);
+    } catch {
+      y = wrapText(doc, img, margin, y, maxWidth, lh);
     }
-    return null;
+  }
+
+  doc.setTextColor(0, 0, 0);
+  doc.setFontSize(11);
+  return y + lineHeight * 0.45;
+}
+
+/** Decode response body to PNG/JPEG data URLs for jsPDF (WebP → JPEG via canvas). */
+async function responseToPdfImageData(res: Response): Promise<{ fmt: "JPEG" | "PNG"; data: string } | null> {
+  if (!res.ok) return null;
+  const blob = await res.blob();
+  if (!blob.size || blob.size > 4_000_000) return null;
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const r = new FileReader();
+    r.onloadend = () => resolve(String(r.result || ""));
+    r.onerror = () => reject(new Error("read"));
+    r.readAsDataURL(blob);
+  });
+  const low = dataUrl.toLowerCase();
+  if (low.startsWith("data:image/png")) return { fmt: "PNG", data: dataUrl };
+  if (low.startsWith("data:image/jpeg") || low.startsWith("data:image/jpg"))
+    return { fmt: "JPEG", data: dataUrl };
+  if (low.startsWith("data:image/webp")) {
+    try {
+      const bmp = await createImageBitmap(blob);
+      const c = document.createElement("canvas");
+      c.width = bmp.width;
+      c.height = bmp.height;
+      const ctx = c.getContext("2d");
+      if (!ctx) return null;
+      ctx.drawImage(bmp, 0, 0);
+      const jpeg = c.toDataURL("image/jpeg", 0.85);
+      return { fmt: "JPEG", data: jpeg };
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Fetch remote image for PDF. Third-party CDNs block browser CORS, so we use the API proxy first.
+ */
+async function imageUrlToPdfFormat(url: string): Promise<{ fmt: "JPEG" | "PNG"; data: string } | null> {
+  const trimmed = (url || "").trim();
+  if (!trimmed.startsWith("http")) return null;
+  try {
+    const proxyUrl = `${API_BASE_URL}/api/rag/consultant-report-image?${new URLSearchParams({ url: trimmed })}`;
+    const proxied = await fetch(proxyUrl, {
+      mode: "cors",
+      credentials: "omit",
+      headers: { ...authHeaderRecord() },
+    });
+    const fromProxy = await responseToPdfImageData(proxied);
+    if (fromProxy) return fromProxy;
+  } catch {
+    /* fall through */
+  }
+  try {
+    const direct = await fetch(trimmed, { mode: "cors", credentials: "omit" });
+    return await responseToPdfImageData(direct);
   } catch {
     return null;
   }
@@ -486,7 +561,7 @@ async function downloadReport(messages: Message[]) {
       y += lineHeight;
       doc.setFont("helvetica", "normal");
       const imgW = Math.min(maxWidth, 100);
-      for (const im of m.aircraft_images.slice(0, 8)) {
+      for (const im of m.aircraft_images.slice(0, 32)) {
         if (y > 200) {
           doc.addPage();
           y = margin;
@@ -508,13 +583,18 @@ async function downloadReport(messages: Message[]) {
               y = margin;
             }
             doc.addImage(loaded.data, loaded.fmt, margin, y, imgW, Math.min(h, 80));
-            y += Math.min(h, 80) + lineHeight;
+            y += Math.min(h, 80) + lineHeight * 0.35;
           } catch {
-            y = wrapText(doc, im.url, margin, y, maxWidth, lineHeight * 0.85);
+            doc.setFontSize(10);
+            y = wrapText(doc, "(Could not embed image in PDF.)", margin, y, maxWidth, lineHeight * 0.85);
+            doc.setFontSize(11);
           }
         } else {
-          y = wrapText(doc, `(Open: ${im.url})`, margin, y, maxWidth, lineHeight * 0.85);
+          doc.setFontSize(10);
+          y = wrapText(doc, "(Image not embedded — use source link below.)", margin, y, maxWidth, lineHeight * 0.85);
+          doc.setFontSize(11);
         }
+        y = appendPdfImageSourceLinks(doc, im, margin, y, maxWidth, lineHeight);
       }
       y += lineHeight * 0.5;
     }
