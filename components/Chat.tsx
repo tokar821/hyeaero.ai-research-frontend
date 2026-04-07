@@ -5,6 +5,7 @@ import { jsPDF } from "jspdf";
 import { Bot, Download, GripVertical, Loader2, Pencil, Plus, Send, MessageSquare, X } from "lucide-react";
 import {
   API_BASE_URL,
+  consultantReportImageProxyUrl,
   getConsultantQuota,
   mergeConsultantAircraftImageLists,
   parseConsultantAircraftImages,
@@ -233,6 +234,16 @@ function ConsultantImageTile({
   onImageError: () => void;
 }) {
   const alt = displayImageAlt(im.description);
+  const proxied = consultantReportImageProxyUrl(im.url);
+  const [displaySrc, setDisplaySrc] = useState(() => proxied ?? im.url);
+
+  const handleImgError = () => {
+    if (proxied && displaySrc === proxied) {
+      setDisplaySrc(im.url);
+      return;
+    }
+    onImageError();
+  };
 
   return (
     <a
@@ -242,14 +253,15 @@ function ConsultantImageTile({
       className="group relative block rounded-lg overflow-hidden border border-slate-200 dark:border-slate-600 bg-slate-100 dark:bg-slate-900/50 aspect-[4/3] focus:outline-none focus:ring-2 focus:ring-accent/40"
       title={title}
     >
-      {/* eslint-disable-next-line @next/next/no-img-element */}
+      {/* eslint-disable-next-line @next/next/no-img-element — proxy or direct; Next/Image cannot proxy arbitrary consultant URLs */}
       <img
-        src={im.url}
+        src={displaySrc}
         alt={alt || "Aircraft photo"}
         loading="lazy"
         decoding="async"
+        referrerPolicy="no-referrer"
         className="w-full h-full object-cover transition-transform group-hover:scale-[1.02]"
-        onError={onImageError}
+        onError={handleImgError}
       />
       <span className="absolute bottom-1 left-1 right-1 flex flex-wrap gap-1 pointer-events-none">
         <span className="text-[10px] px-1.5 py-0.5 rounded bg-black/60 text-white truncate max-w-full">

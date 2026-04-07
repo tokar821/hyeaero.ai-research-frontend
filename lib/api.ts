@@ -83,6 +83,16 @@ export type ConsultantChatResponse = {
 };
 
 /** Prefer Tavily scrape order: primary list first, then extras from ``data_used``, deduped by URL. */
+/**
+ * Browser `<img>` loads often fail for consultant image URLs (CDN hotlink protection, referrer rules).
+ * Same-origin proxy as PDF export — backend SSRF-allowlisted fetch.
+ */
+export function consultantReportImageProxyUrl(originalUrl: string): string | null {
+  const u = (originalUrl || "").trim();
+  if (!u.startsWith("https://")) return null;
+  return `${API_URL}/api/rag/consultant-report-image?${new URLSearchParams({ url: u })}`;
+}
+
 export function mergeConsultantAircraftImageLists(
   ...lists: Array<ConsultantAircraftImage[] | undefined | null>
 ): ConsultantAircraftImage[] {
