@@ -6,7 +6,10 @@ import {
   verifyConsultantAdminBearer,
 } from "@/lib/admin-proxy";
 
-export async function DELETE(req: NextRequest, ctx: { params: { id: string } }) {
+export async function DELETE(
+  req: NextRequest,
+  ctx: { params: Promise<{ id: string }> }
+) {
   const adminKey = getConsultantAdminKey();
   if (!adminKey) {
     const { status, detail } = consultantAdminNotConfiguredResponse();
@@ -15,7 +18,7 @@ export async function DELETE(req: NextRequest, ctx: { params: { id: string } }) 
   if (!verifyConsultantAdminBearer(req)) {
     return NextResponse.json({ detail: "Unauthorized" }, { status: 401 });
   }
-  const { id } = ctx.params;
+  const { id } = await ctx.params;
   const res = await fetch(`${getBackendBaseUrl()}/api/admin/consultant-queries/${encodeURIComponent(id)}`, {
     method: "DELETE",
     headers: { "X-Admin-Key": adminKey },
