@@ -1,6 +1,9 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
+  // Next 16 enables Turbopack by default. We keep a small dev-only webpack tweak,
+  // so declare an empty Turbopack config to avoid build-time ambiguity warnings/errors.
+  turbopack: {},
   // Keep compiled pages in memory longer in dev to avoid HTML pointing at evicted `/_next/static/*` chunks
   // (manifests as 404 spam + broken JS/CSS until full reload — common on Windows after HMR).
   onDemandEntries: {
