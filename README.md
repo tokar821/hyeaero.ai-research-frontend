@@ -29,8 +29,10 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 # CONSULTANT_ANALYTICS_ADMIN_KEY=
 # Optional: private API base for server-side admin proxy (defaults to NEXT_PUBLIC_API_URL).
 # INTERNAL_API_URL=http://localhost:8000
-# Optional: browser wait for POST /api/rag/answer (ms). Consultant runs LLM+Tavily+RAG; default 180000.
-# NEXT_PUBLIC_RAG_TIMEOUT_MS=180000
+# Optional: browser wall-clock wait for consultant (sync + stream). Default 30 min if unset; set 0/off/never to disable client abort.
+# NEXT_PUBLIC_RAG_TIMEOUT_MS=1800000
+# Optional: SSE idle — abort only if no bytes for this long after the first chunk (default 20 min). 0 = off.
+# NEXT_PUBLIC_RAG_STREAM_IDLE_MS=1200000
 # Optional: show a canned demo reply if backend is offline
 NEXT_PUBLIC_DEMO_CHAT=false
 ```

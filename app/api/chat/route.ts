@@ -5,11 +5,22 @@
 import { NextRequest, NextResponse } from "next/server";
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL || process.env.NEXT_PUBLIC_RAG_API_URL || "http://localhost:8000";
-/** Consultant pipeline (expand + Tavily + RAG + 2× LLM) often needs >65s; abort matches this or user sees a false "timeout". */
-const REQUEST_TIMEOUT_MS = Math.min(
-  300_000,
-  Math.max(30_000, parseInt(process.env.CHAT_PROXY_TIMEOUT_MS || "120000", 10) || 120_000)
-);
+
+const CHAT_PROXY_CAP_MS = 7_200_000; // 2h
+const CHAT_PROXY_FLOOR_MS = 30_000;
+
+/** Legacy `/api/chat` proxy → FastAPI. Match generous consultant timeouts (slow networks). `0` = no abort. */
+function resolveChatProxyTimeoutMs(): number {
+  const raw = (process.env.CHAT_PROXY_TIMEOUT_MS ?? "").trim().toLowerCase();
+  if (raw === "0" || raw === "off" || raw === "never" || raw === "false") {
+    return 0;
+  }
+  const parsed = parseInt(process.env.CHAT_PROXY_TIMEOUT_MS || "", 10);
+  const base = Number.isFinite(parsed) && parsed > 0 ? parsed : 1_800_000; // 30 min default
+  return Math.min(CHAT_PROXY_CAP_MS, Math.max(CHAT_PROXY_FLOOR_MS, base));
+}
+
+const REQUEST_TIMEOUT_MS = resolveChatProxyTimeoutMs();
 
 const DEMO_ANSWER =
   "Based on real-time market data, this is a placeholder response. Connect the backend (see README) for live answers.";
@@ -26,42 +37,49 @@ export async function POST(request: NextRequest) {
       : undefined;
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const timeoutId =
+      REQUEST_TIMEOUT_MS > 0
+        ? setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+        : undefined;
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/rag/answer`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(history ? { query: query.trim(), history } : { query: query.trim() }),
+        signal: controller.signal,
+      });
 
-    const res = await fetch(`${BACKEND_URL}/api/rag/answer`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(history ? { query: query.trim(), history } : { query: query.trim() }),
-      signal: controller.signal,
-    });
-    clearTimeout(timeoutId);
-
-    if (!res.ok) {
-      const text = await res.text();
-      let message = "The research service is temporarily unavailable.";
-      if (res.status === 503) message = "Service is starting or not configured. Check backend logs.";
-      try {
-        const err = JSON.parse(text);
-        if (err.detail) message = err.detail;
-      } catch {
-        // use default message
+      if (!res.ok) {
+        const text = await res.text();
+        let message = "The research service is temporarily unavailable.";
+        if (res.status === 503) message = "Service is starting or not configured. Check backend logs.";
+        try {
+          const err = JSON.parse(text);
+          if (err.detail) message = err.detail;
+        } catch {
+          // use default message
+        }
+        return NextResponse.json(
+          { answer: message, sources: [], data_used: null, aircraft_images: null, error: message },
+          { status: 200 }
+        );
       }
-      return NextResponse.json(
-        { answer: message, sources: [], data_used: null, aircraft_images: null, error: message },
-        { status: 200 }
-      );
-    }
 
-    const data = await res.json();
-    return NextResponse.json({
-      answer: data.answer ?? "",
-      sources: data.sources ?? [],
-      data_used: data.data_used ?? null,
-      aircraft_images: data.aircraft_images ?? null,
-      error: data.error ?? null,
-    });
+      const data = await res.json();
+      return NextResponse.json({
+        answer: data.answer ?? "",
+        sources: data.sources ?? [],
+        data_used: data.data_used ?? null,
+        aircraft_images: data.aircraft_images ?? null,
+        error: data.error ?? null,
+      });
+    } finally {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+    }
   } catch (e) {
-    const isTimeout = e instanceof Error && e.name === "AbortError";
+    const isTimeout =
+      (e instanceof DOMException && e.name === "AbortError") ||
+      (e instanceof Error && e.name === "AbortError");
     const message =
       process.env.NEXT_PUBLIC_DEMO_CHAT === "true"
         ? DEMO_ANSWER

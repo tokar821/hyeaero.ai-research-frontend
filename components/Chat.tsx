@@ -10,6 +10,7 @@ import {
   mergeConsultantAircraftImageLists,
   parseConsultantAircraftImages,
   postRagAnswerStream,
+  RAG_ABORT_USER_MESSAGE,
   type ConsultantAircraftImage,
 } from "@/lib/api";
 import { authHeaderRecord } from "@/lib/auth-token";
@@ -926,7 +927,7 @@ export default function Chat({ onQuerySent, suggestedQuery, onSuggestedQueryCons
         const isTimeout = e instanceof Error && e.name === "AbortError";
         const shouldRetry = !isTimeout && retryCount < MAX_RETRIES;
         const errorMsg = isTimeout
-          ? "This answer was taking longer than usual, so we stopped waiting. Try a shorter or more specific question, or try again in a moment."
+          ? RAG_ABORT_USER_MESSAGE
           : "Sorry, something went wrong. Check your connection and that the app is available, then try again.";
         setMessages((prev) =>
           prev.map((m) =>

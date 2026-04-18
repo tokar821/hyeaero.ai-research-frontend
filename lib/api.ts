@@ -9,11 +9,55 @@ export const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://88.99.198
 
 const API_URL = API_BASE_URL;
 
-/** Browser → FastAPI directly (no Next.js proxy). Consultant pipeline can exceed 60s. */
-const RAG_ANSWER_TIMEOUT_MS = Math.min(
-  300_000,
-  Math.max(45_000, parseInt(process.env.NEXT_PUBLIC_RAG_TIMEOUT_MS || "180000", 10) || 180_000)
-);
+/** Hard ceiling for wall-clock client waits (ms). */
+const RAG_WALL_CAP_MS = 7_200_000; // 2 hours
+/** Minimum finite wall-clock when set (allows short timeouts for tests). */
+const RAG_WALL_FLOOR_MS = 30_000; // 30s
+
+/** Shown when the client aborts a consultant request (wall-clock or idle stall). */
+export const RAG_ABORT_USER_MESSAGE =
+  "This answer was taking longer than usual, so we stopped waiting. Try a shorter or more specific question, or try again in a moment.";
+
+/**
+ * Wall-clock limit for consultant calls (sync JSON + stream fetch).
+ * - Default **30 minutes** if `NEXT_PUBLIC_RAG_TIMEOUT_MS` is unset (slow networks + long RAG/LLM).
+ * - Set to **`0`**, **`off`**, **`never`**, or **`false`** to **disable** the client abort (wait until the browser/OS closes the connection).
+ * - Per-call override: positive ms, clamped to [30s, 2h].
+ */
+export function resolveRagWallTimeoutMs(overrideMs?: number): number {
+  if (overrideMs !== undefined && overrideMs > 0) {
+    return Math.min(RAG_WALL_CAP_MS, Math.max(RAG_WALL_FLOOR_MS, overrideMs));
+  }
+  const raw = (process.env.NEXT_PUBLIC_RAG_TIMEOUT_MS ?? "").trim().toLowerCase();
+  if (raw === "0" || raw === "off" || raw === "never" || raw === "false") {
+    return 0;
+  }
+  const parsed = parseInt(process.env.NEXT_PUBLIC_RAG_TIMEOUT_MS || "", 10);
+  const base = Number.isFinite(parsed) && parsed > 0 ? parsed : 1_800_000; // 30 min default
+  return Math.min(RAG_WALL_CAP_MS, Math.max(RAG_WALL_FLOOR_MS, base));
+}
+
+/**
+ * Stream-only: abort if **no SSE bytes** arrive for this long after the first chunk (stalled connection).
+ * Does not run until the first body chunk — slow TTFB / server "thinking" only uses the wall-clock limit.
+ * Set `NEXT_PUBLIC_RAG_STREAM_IDLE_MS=0` (or `off` / `never`) to disable.
+ * Default 20 minutes.
+ */
+function resolveRagStreamIdleMs(): number {
+  const raw = (process.env.NEXT_PUBLIC_RAG_STREAM_IDLE_MS ?? "").trim().toLowerCase();
+  if (raw === "0" || raw === "off" || raw === "never" || raw === "false") {
+    return 0;
+  }
+  const parsed = parseInt(process.env.NEXT_PUBLIC_RAG_STREAM_IDLE_MS || "", 10);
+  const base = Number.isFinite(parsed) && parsed > 0 ? parsed : 1_200_000; // 20 min default
+  return Math.min(RAG_WALL_CAP_MS, Math.max(60_000, base));
+}
+
+function isAbortError(e: unknown): boolean {
+  if (e instanceof DOMException && e.name === "AbortError") return true;
+  if (e instanceof Error && e.name === "AbortError") return true;
+  return false;
+}
 
 export type AircraftModelsResponse = { models: string[] };
 
@@ -142,9 +186,10 @@ export async function postRagAnswer(
     timeoutMs?: number;
   }
 ): Promise<ConsultantChatResponse> {
-  const timeoutMs = options?.timeoutMs ?? RAG_ANSWER_TIMEOUT_MS;
+  const timeoutMs = resolveRagWallTimeoutMs(options?.timeoutMs);
   const controller = new AbortController();
-  const tid = setTimeout(() => controller.abort(), timeoutMs);
+  const tid =
+    timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
   const body: Record<string, unknown> = { query: query.trim() };
   if (options?.history?.length) {
     body.history = options.history;
@@ -177,8 +222,19 @@ export async function postRagAnswer(
       aircraft_images: merged,
       error: data.error ?? null,
     };
+  } catch (e) {
+    if (isAbortError(e)) {
+      return {
+        answer: RAG_ABORT_USER_MESSAGE,
+        sources: [],
+        data_used: null,
+        aircraft_images: [],
+        error: RAG_ABORT_USER_MESSAGE,
+      };
+    }
+    throw e;
   } finally {
-    clearTimeout(tid);
+    if (tid !== undefined) clearTimeout(tid);
   }
 }
 
@@ -228,9 +284,36 @@ export async function postRagAnswerStream(
     onError?: (message: string) => void;
   }
 ): Promise<void> {
-  const timeoutMs = options.timeoutMs ?? RAG_ANSWER_TIMEOUT_MS;
+  const wallMs = resolveRagWallTimeoutMs(options.timeoutMs);
+  const idleMs = resolveRagStreamIdleMs();
   const controller = new AbortController();
-  const tid = setTimeout(() => controller.abort(), timeoutMs);
+  let wallTid: ReturnType<typeof setTimeout> | undefined;
+  let idleTid: ReturnType<typeof setTimeout> | undefined;
+
+  const clearIdle = () => {
+    if (idleTid !== undefined) {
+      clearTimeout(idleTid);
+      idleTid = undefined;
+    }
+  };
+  const bumpIdle = () => {
+    clearIdle();
+    if (idleMs > 0) {
+      idleTid = setTimeout(() => controller.abort(), idleMs);
+    }
+  };
+  const clearAll = () => {
+    if (wallTid !== undefined) {
+      clearTimeout(wallTid);
+      wallTid = undefined;
+    }
+    clearIdle();
+  };
+
+  if (wallMs > 0) {
+    wallTid = setTimeout(() => controller.abort(), wallMs);
+  }
+
   const body: Record<string, unknown> = { query: query.trim() };
   if (options.history?.length) {
     body.history = options.history;
@@ -253,6 +336,7 @@ export async function postRagAnswerStream(
       }
       options.onError?.(msg);
       options.onDone({ sources: [], data_used: null, error: msg });
+      clearAll();
       return;
     }
     const reader = res.body?.getReader();
@@ -260,6 +344,7 @@ export async function postRagAnswerStream(
       const msg = "No response body";
       options.onError?.(msg);
       options.onDone({ error: msg });
+      clearAll();
       return;
     }
     const decoder = new TextDecoder();
@@ -304,6 +389,9 @@ export async function postRagAnswerStream(
     };
     while (true) {
       const { done, value } = await reader.read();
+      if (value && value.byteLength > 0) {
+        bumpIdle();
+      }
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
       const parts = buffer.split("\n\n");
@@ -313,17 +401,18 @@ export async function postRagAnswerStream(
       }
     }
     if (buffer.trim()) flushBlock(buffer);
+    clearAll();
   } catch (e) {
-    const isTimeout = e instanceof Error && e.name === "AbortError";
-    const msg = isTimeout
-      ? "This answer was taking longer than usual, so we stopped waiting. Try a shorter or more specific question, or try again in a moment."
+    const aborted = isAbortError(e);
+    const msg = aborted
+      ? RAG_ABORT_USER_MESSAGE
       : e instanceof Error
         ? e.message
         : "Stream failed";
     options.onError?.(msg);
     options.onDone({ sources: [], data_used: null, error: msg });
   } finally {
-    clearTimeout(tid);
+    clearAll();
   }
 }
 
