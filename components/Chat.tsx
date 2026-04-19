@@ -152,17 +152,10 @@ I can help with aircraft missions, specifications, ownership research, market in
 function sourceLabel(src: string | undefined): string {
   const s = (src || "").toLowerCase();
   if (s === "tavily") return "Web";
+  if (s.startsWith("searchapi")) return "Web search";
   if (s === "scrape_gallery") return "Listing gallery";
   if (s === "listing_og") return "Listing preview";
   return src || "Image";
-}
-
-function sectionTitleForSource(src: string): string {
-  const s = src.toLowerCase();
-  if (s === "tavily") return "Web images";
-  if (s === "scrape_gallery") return "Marketplace gallery (scraped)";
-  if (s === "listing_og") return "Listing preview (og:image)";
-  return "Other";
 }
 
 const SOURCE_SECTION_ORDER = ["tavily", "scrape_gallery", "listing_og"] as const;
@@ -264,11 +257,6 @@ function ConsultantImageTile({
         className="w-full h-full object-cover transition-transform group-hover:scale-[1.02]"
         onError={handleImgError}
       />
-      <span className="absolute bottom-1 left-1 right-1 flex flex-wrap gap-1 pointer-events-none">
-        <span className="text-[10px] px-1.5 py-0.5 rounded bg-black/60 text-white truncate max-w-full">
-          {sourceLabel(im.source)}
-        </span>
-      </span>
     </a>
   );
 }
@@ -334,53 +322,42 @@ function AircraftImageGallery({ images }: { images: ConsultantAircraftImage[] })
     if (!orderedKeys.includes(k)) orderedKeys.push(k);
   }
 
+  /** Single grid, no section labels — preserve tavily bucket order then other sources. */
+  const flat: ConsultantAircraftImage[] = [];
+  const seenUrl = new Set<string>();
+  const pushUnique = (arr: ConsultantAircraftImage[]) => {
+    for (const im of arr) {
+      const u = (im.url || "").trim();
+      if (!u || seenUrl.has(u)) continue;
+      seenUrl.add(u);
+      flat.push(im);
+    }
+  };
+
+  for (const sourceKey of orderedKeys) {
+    const section = grouped.get(sourceKey);
+    if (!section?.length) continue;
+    if (sourceKey === "tavily") {
+      const byBucket = new Map<TavilyVisualBucket, ConsultantAircraftImage[]>();
+      for (const b of ["exterior", "cabin", "more"] as TavilyVisualBucket[]) {
+        byBucket.set(b, []);
+      }
+      for (const im of section) {
+        byBucket.get(tavilyImageBucket(im))!.push(im);
+      }
+      for (const { key: bucketKey } of TAVILY_BUCKET_ORDER) {
+        pushUnique(byBucket.get(bucketKey) || []);
+      }
+    } else {
+      pushUnique(section);
+    }
+  }
+
+  if (!flat.length) return null;
+
   return (
-    <div className="pl-1 mt-3 space-y-4">
-      <p className="text-xs font-medium text-slate-600 dark:text-slate-300">
-        Aircraft images — from web search and listing sources (verify on the site; may not be this exact airframe)
-      </p>
-      {orderedKeys.map((sourceKey) => {
-        const section = grouped.get(sourceKey);
-        if (!section?.length) return null;
-
-        if (sourceKey === "tavily") {
-          const byBucket = new Map<TavilyVisualBucket, ConsultantAircraftImage[]>();
-          for (const b of ["exterior", "cabin", "more"] as TavilyVisualBucket[]) {
-            byBucket.set(b, []);
-          }
-          for (const im of section) {
-            byBucket.get(tavilyImageBucket(im))!.push(im);
-          }
-          return (
-            <div key={sourceKey} className="space-y-3">
-              <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                {sectionTitleForSource(sourceKey)}
-              </p>
-              {TAVILY_BUCKET_ORDER.map(({ key: bucketKey, label }) => {
-                const bucket = byBucket.get(bucketKey) || [];
-                if (!bucket.length) return null;
-                return (
-                  <ImageTileGrid
-                    key={`${sourceKey}-${bucketKey}`}
-                    items={bucket}
-                    reactKeyPrefix={`${sourceKey}-${bucketKey}`}
-                    bucketLabel={label}
-                  />
-                );
-              })}
-            </div>
-          );
-        }
-
-        return (
-          <div key={sourceKey} className="space-y-2">
-            <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-              {sectionTitleForSource(sourceKey)}
-            </p>
-            <ImageTileGrid items={section} reactKeyPrefix={sourceKey} />
-          </div>
-        );
-      })}
+    <div className="pl-1 mt-3">
+      <ImageTileGrid items={flat} reactKeyPrefix="gallery" />
     </div>
   );
 }
@@ -1188,16 +1165,6 @@ export default function Chat({ onQuerySent, suggestedQuery, onSuggestedQueryCons
                   </div>
                   {!m.streaming && m.aircraft_images && m.aircraft_images.length > 0 ? (
                     <AircraftImageGallery images={m.aircraft_images} />
-                  ) : null}
-                  {!m.streaming &&
-                  (!m.aircraft_images || m.aircraft_images.length === 0) &&
-                  (Number((m.data_used as Record<string, unknown> | undefined)?.consultant_user_asked_photos) === 1 ||
-                    Number((m.data_used as Record<string, unknown> | undefined)?.consultant_show_image_ui_context) ===
-                      1) ? (
-                    <p className="pl-1 mt-2 text-xs text-slate-500 dark:text-slate-400">
-                      No image URLs matched from our web search or listing pipeline for this question. Try adding the
-                      full registration or serial, or phrases like “photos” / “images” with the tail number.
-                    </p>
                   ) : null}
                 </div>
               </div>
