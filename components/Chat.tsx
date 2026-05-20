@@ -2,7 +2,19 @@
 
 import { useState, useRef, useEffect, useCallback, type KeyboardEvent } from "react";
 import { jsPDF } from "jspdf";
-import { Bot, Download, GripVertical, Loader2, Pencil, Plus, Send, MessageSquare, X } from "lucide-react";
+import {
+  Bot,
+  Check,
+  Copy,
+  Download,
+  GripVertical,
+  Loader2,
+  Pencil,
+  Plus,
+  Send,
+  MessageSquare,
+  X,
+} from "lucide-react";
 import {
   API_BASE_URL,
   consultantReportImageProxyUrl,
@@ -359,6 +371,54 @@ function AircraftImageGallery({ images }: { images: ConsultantAircraftImage[] })
     <div className="pl-1 mt-3">
       <ImageTileGrid items={flat} reactKeyPrefix="gallery" />
     </div>
+  );
+}
+
+/** Copy assistant reply text to clipboard (plain text only). */
+function CopyAnswerButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = useCallback(async () => {
+    const payload = (text || "").trim();
+    if (!payload) return;
+    try {
+      await navigator.clipboard.writeText(payload);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = payload;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 2000);
+      } catch {
+        /* ignore */
+      }
+    }
+  }, [text]);
+
+  return (
+    <button
+      type="button"
+      onClick={() => void handleCopy()}
+      className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-slate-500 dark:text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-700/80 dark:hover:text-slate-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+      aria-label={copied ? "Copied to clipboard" : "Copy answer"}
+      title={copied ? "Copied" : "Copy answer"}
+    >
+      {copied ? (
+        <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" aria-hidden />
+      ) : (
+        <Copy className="w-3.5 h-3.5" aria-hidden />
+      )}
+      {copied ? "Copied" : "Copy"}
+    </button>
   );
 }
 
@@ -1163,6 +1223,11 @@ export default function Chat({ onQuerySent, suggestedQuery, onSuggestedQueryCons
                       />
                     ) : null}
                   </div>
+                  {!m.streaming && m.content.trim() ? (
+                    <div className="flex justify-start pl-0.5">
+                      <CopyAnswerButton text={m.content} />
+                    </div>
+                  ) : null}
                   {!m.streaming && m.aircraft_images && m.aircraft_images.length > 0 ? (
                     <AircraftImageGallery images={m.aircraft_images} />
                   ) : null}
