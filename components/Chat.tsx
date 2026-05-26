@@ -459,12 +459,50 @@ function ConsultantLoadingIndicator({
   );
 }
 
+/**
+ * jsPDF standard fonts only support WinAnsi reliably — normalize Unicode and ensure plain strings.
+ */
+/** Backend bug: `", ".join(route_string)` spaced every character — strip for PDF export. */
+function repairCorruptRouteLines(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => {
+      const t = line.trim();
+      if (!/^Route\(s\):/i.test(t)) return line;
+      if (!/(?:^|, )[A-Za-z], [a-z], /.test(t)) return line;
+      return "Route(s): (see live chat for route summary — re-export after your next consultant reply)";
+    })
+    .join("\n");
+}
+
+function sanitizeTextForPdf(text: unknown): string {
+  let s = typeof text === "string" ? text : String(text ?? "");
+  s = s.normalize("NFKC");
+  s = s
+    .replace(/\u2192/g, "->")
+    .replace(/[\u2013\u2014\u2212]/g, "-")
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/\u00A0/g, " ")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "");
+  s = s.replace(/[^\x09\x0A\x0D\x20-\x7E]/g, (ch) => {
+    if (ch === "→") return "->";
+    return "";
+  });
+  s = s.replace(/\r\n/g, "\n").replace(/\t/g, " ").trim();
+  return repairCorruptRouteLines(s);
+}
+
 function wrapText(doc: jsPDF, text: string, x: number, y: number, maxWidth: number, lineHeight: number): number {
-  const lines = doc.splitTextToSize(text, maxWidth);
-  lines.forEach((line: string) => {
+  const safe = sanitizeTextForPdf(text);
+  if (!safe) return y;
+  const rawLines = doc.splitTextToSize(safe, maxWidth);
+  const lines = Array.isArray(rawLines) ? rawLines.map((line) => String(line)) : [String(rawLines)];
+  for (const line of lines) {
+    if (!line) continue;
     doc.text(line, x, y);
     y += lineHeight;
-  });
+  }
   return y;
 }
 
@@ -586,21 +624,24 @@ async function downloadReport(messages: Message[]) {
   const maxWidth = pageWidth - margin * 2;
   let y = margin;
   const lineHeight = 6;
+  const reportMessages = messages.filter(
+    (m) => !m.streaming && m.id !== "0" && sanitizeTextForPdf(m.content).length > 0
+  );
   doc.setFontSize(16);
-  doc.text("HyeAero.AI — Research Chat Report", margin, y);
+  doc.text(sanitizeTextForPdf("HyeAero.AI - Research Chat Report"), margin, y);
   y += 10;
   doc.setFontSize(10);
-  doc.text(`Generated: ${new Date().toLocaleString()}`, margin, y);
+  doc.text(sanitizeTextForPdf(`Generated: ${new Date().toLocaleString()}`), margin, y);
   y += lineHeight * 2;
   doc.setFontSize(11);
-  for (const m of messages) {
+  for (const m of reportMessages) {
     if (y > 270) {
       doc.addPage();
       y = margin;
     }
     const label = m.role === "user" ? "You" : "Consultant";
     doc.setFont("helvetica", "bold");
-    doc.text(label, margin, y);
+    doc.text(sanitizeTextForPdf(label), margin, y);
     y += lineHeight;
     doc.setFont("helvetica", "normal");
     y = wrapText(doc, m.content, margin, y, maxWidth, lineHeight) + lineHeight;
@@ -941,7 +982,9 @@ export default function Chat({ onQuerySent, suggestedQuery, onSuggestedQueryCons
                 } else if (err && content.trim()) {
                   content = `${content}\n\n(${err})`;
                 } else if (!content.trim() && !err) {
-                  content = "I couldn't get a response. Please try again.";
+                  content =
+                    "I hit a formatting fault on the last pass, but I can still size the mission. " +
+                    "Restate the city pair, passengers, and any nonstop requirement and I will rebuild the advisory.";
                 }
                 return {
                   ...m,
