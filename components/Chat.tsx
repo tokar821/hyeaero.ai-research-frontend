@@ -64,7 +64,9 @@ type SavedChatSession = {
 
 const LS_CHATS = "hyeaero_consultant_chats_v1";
 const LS_ACTIVE = "hyeaero_consultant_active_chat_id_v1";
-const MAX_STORED_CHATS = 40;
+const MAX_STORED_CHATS = 20;
+const MAX_PERSISTED_MESSAGES_PER_CHAT = 80;
+const MAX_PERSISTED_CONTENT_CHARS = 12_000;
 
 function toPersistedMessages(messages: Message[]): PersistedMessage[] {
   return messages
@@ -77,6 +79,72 @@ function toPersistedMessages(messages: Message[]): PersistedMessage[] {
       data_used: m.data_used ?? null,
       aircraft_images: m.aircraft_images,
     }));
+}
+
+/** Strip heavy fields and cap size before writing to localStorage (~5MB browser quota). */
+function slimSessionsForStorage(list: SavedChatSession[]): SavedChatSession[] {
+  return list.slice(0, MAX_STORED_CHATS).map((s) => ({
+    id: s.id,
+    title: s.title.length > 80 ? `${s.title.slice(0, 77)}…` : s.title,
+    updatedAt: s.updatedAt,
+    messages: s.messages.slice(-MAX_PERSISTED_MESSAGES_PER_CHAT).map((m) => ({
+      id: m.id,
+      role: m.role,
+      content:
+        m.content.length > MAX_PERSISTED_CONTENT_CHARS
+          ? `${m.content.slice(0, MAX_PERSISTED_CONTENT_CHARS)}…`
+          : m.content,
+      sources: m.sources?.slice(0, 24),
+    })),
+  }));
+}
+
+function isStorageQuotaError(err: unknown): boolean {
+  return (
+    err instanceof DOMException &&
+    (err.name === "QuotaExceededError" || err.code === 22)
+  );
+}
+
+/** Never throws — React state updaters must not call throwing localStorage writes. */
+function persistSessionsList(list: SavedChatSession[], activeId: string): boolean {
+  if (typeof window === "undefined") return false;
+
+  const attempts: SavedChatSession[][] = [
+    slimSessionsForStorage(list),
+    slimSessionsForStorage(list.slice(0, 10)),
+    slimSessionsForStorage(list.slice(0, 5)),
+    slimSessionsForStorage(list.filter((s) => s.id === activeId).slice(0, 1)),
+  ];
+
+  for (const candidate of attempts) {
+    if (!candidate.length) continue;
+    try {
+      localStorage.setItem(LS_CHATS, JSON.stringify(candidate));
+      localStorage.setItem(LS_ACTIVE, activeId);
+      return true;
+    } catch (err) {
+      if (!isStorageQuotaError(err)) return false;
+    }
+  }
+
+  try {
+    localStorage.removeItem(LS_CHATS);
+    const fallbackId = activeId || generateId();
+    const fallback: SavedChatSession[] = [
+      {
+        id: fallbackId,
+        title: "New chat",
+        updatedAt: Date.now(),
+        messages: [{ id: "0", role: "assistant", content: "New chat" }],
+      },
+    ];
+    localStorage.setItem(LS_CHATS, JSON.stringify(slimSessionsForStorage(fallback)));
+    localStorage.setItem(LS_ACTIVE, fallbackId);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function rehydrateMessages(p: PersistedMessage[]): Message[] {
@@ -115,15 +183,6 @@ function mergeSession(
   const next = [...sessions];
   next[idx] = row;
   return next;
-}
-
-function persistSessionsList(list: SavedChatSession[], activeId: string) {
-  try {
-    localStorage.setItem(LS_CHATS, JSON.stringify(list));
-    localStorage.setItem(LS_ACTIVE, activeId);
-  } catch {
-    /* ignore */
-  }
 }
 
 /** Move item from index `from` to index `to` (both refer to positions in the list before the move). */
@@ -735,9 +794,11 @@ export default function Chat({ onQuerySent, suggestedQuery, onSuggestedQueryCons
       } else if (!aid || !list.some((s) => s.id === aid)) {
         aid = list[0]!.id;
       }
-      const active = list.find((s) => s.id === aid)!;
-      setSessions(list);
-      setActiveChatId(aid);
+      const slimmed = slimSessionsForStorage(list);
+      const active = slimmed.find((s) => s.id === aid) ?? slimmed[0]!;
+      persistSessionsList(slimmed, active.id);
+      setSessions(slimmed);
+      setActiveChatId(active.id);
       setMessages(rehydrateMessages(active.messages));
     } catch {
       const id = generateId();
@@ -752,16 +813,11 @@ export default function Chat({ onQuerySent, suggestedQuery, onSuggestedQueryCons
   useEffect(() => {
     if (!hydrated || typeof window === "undefined") return;
     const h = window.setTimeout(() => {
-      try {
-        setSessions((prev) => {
-          const next = mergeSession(prev, activeChatId, messages);
-          localStorage.setItem(LS_CHATS, JSON.stringify(next));
-          localStorage.setItem(LS_ACTIVE, activeChatId);
-          return next;
-        });
-      } catch {
-        /* ignore quota / private mode */
-      }
+      setSessions((prev) => {
+        const next = mergeSession(prev, activeChatId, messages);
+        persistSessionsList(next, activeChatId);
+        return next;
+      });
     }, 450);
     return () => window.clearTimeout(h);
   }, [messages, activeChatId, hydrated]);
@@ -790,12 +846,7 @@ export default function Chat({ onQuerySent, suggestedQuery, onSuggestedQueryCons
       setSessions((prev) => {
         const n = mergeSession(prev, activeChatId, messages);
         const t = n.find((s) => s.id === targetId);
-        try {
-          localStorage.setItem(LS_CHATS, JSON.stringify(n));
-          localStorage.setItem(LS_ACTIVE, targetId);
-        } catch {
-          /* ignore */
-        }
+        persistSessionsList(n, targetId);
         requestAnimationFrame(() => {
           setActiveChatId(targetId);
           setMessages(t ? rehydrateMessages(t.messages) : [WELCOME_MSG]);
@@ -815,12 +866,7 @@ export default function Chat({ onQuerySent, suggestedQuery, onSuggestedQueryCons
       const n = mergeSession(prev, activeChatId, messages);
       const fresh: Message[] = [WELCOME_MSG];
       const n2 = mergeSession(n, newId, fresh);
-      try {
-        localStorage.setItem(LS_CHATS, JSON.stringify(n2));
-        localStorage.setItem(LS_ACTIVE, newId);
-      } catch {
-        /* ignore */
-      }
+      persistSessionsList(n2, newId);
       return n2;
     });
     setActiveChatId(newId);
