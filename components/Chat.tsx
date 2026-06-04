@@ -67,6 +67,9 @@ const LS_ACTIVE = "hyeaero_consultant_active_chat_id_v1";
 const MAX_STORED_CHATS = 20;
 const MAX_PERSISTED_MESSAGES_PER_CHAT = 80;
 const MAX_PERSISTED_CONTENT_CHARS = 12_000;
+/** Keep gallery URLs across F5 — small rows (url + caption only). */
+const MAX_PERSISTED_AIRCRAFT_IMAGES_PER_MESSAGE = 12;
+const MAX_PERSISTED_IMAGE_DESC_CHARS = 280;
 
 function toPersistedMessages(messages: Message[]): PersistedMessage[] {
   return messages
@@ -81,21 +84,48 @@ function toPersistedMessages(messages: Message[]): PersistedMessage[] {
     }));
 }
 
+function slimAircraftImagesForStorage(
+  images: ConsultantAircraftImage[] | undefined
+): ConsultantAircraftImage[] | undefined {
+  if (!images?.length) return undefined;
+  const out: ConsultantAircraftImage[] = [];
+  for (const im of images.slice(0, MAX_PERSISTED_AIRCRAFT_IMAGES_PER_MESSAGE)) {
+    const url = (im.url || "").trim();
+    if (!url.startsWith("http")) continue;
+    const desc = (im.description || "").trim();
+    out.push({
+      url,
+      source: im.source,
+      page_url: im.page_url ?? null,
+      lookup_key: im.lookup_key ?? null,
+      description:
+        desc.length > MAX_PERSISTED_IMAGE_DESC_CHARS
+          ? `${desc.slice(0, MAX_PERSISTED_IMAGE_DESC_CHARS)}…`
+          : desc || null,
+    });
+  }
+  return out.length ? out : undefined;
+}
+
 /** Strip heavy fields and cap size before writing to localStorage (~5MB browser quota). */
 function slimSessionsForStorage(list: SavedChatSession[]): SavedChatSession[] {
   return list.slice(0, MAX_STORED_CHATS).map((s) => ({
     id: s.id,
     title: s.title.length > 80 ? `${s.title.slice(0, 77)}…` : s.title,
     updatedAt: s.updatedAt,
-    messages: s.messages.slice(-MAX_PERSISTED_MESSAGES_PER_CHAT).map((m) => ({
-      id: m.id,
-      role: m.role,
-      content:
-        m.content.length > MAX_PERSISTED_CONTENT_CHARS
-          ? `${m.content.slice(0, MAX_PERSISTED_CONTENT_CHARS)}…`
-          : m.content,
-      sources: m.sources?.slice(0, 24),
-    })),
+    messages: s.messages.slice(-MAX_PERSISTED_MESSAGES_PER_CHAT).map((m) => {
+      const aircraft_images = slimAircraftImagesForStorage(m.aircraft_images);
+      return {
+        id: m.id,
+        role: m.role,
+        content:
+          m.content.length > MAX_PERSISTED_CONTENT_CHARS
+            ? `${m.content.slice(0, MAX_PERSISTED_CONTENT_CHARS)}…`
+            : m.content,
+        sources: m.sources?.slice(0, 24),
+        ...(aircraft_images ? { aircraft_images } : {}),
+      };
+    }),
   }));
 }
 
