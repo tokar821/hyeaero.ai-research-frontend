@@ -70,6 +70,9 @@ const MAX_PERSISTED_CONTENT_CHARS = 12_000;
 /** Keep gallery URLs across F5 — small rows (url + caption only). */
 const MAX_PERSISTED_AIRCRAFT_IMAGES_PER_MESSAGE = 12;
 const MAX_PERSISTED_IMAGE_DESC_CHARS = 280;
+/** Inline route-map SVG from ``data_used.consultant_visualization_svg`` (generated server-side, not OpenAI). */
+const MAX_PERSISTED_VIZ_SVG_BLOCKS = 3;
+const MAX_PERSISTED_VIZ_SVG_TOTAL_CHARS = 14_000;
 
 function toPersistedMessages(messages: Message[]): PersistedMessage[] {
   return messages
@@ -98,6 +101,9 @@ function slimAircraftImagesForStorage(
       source: im.source,
       page_url: im.page_url ?? null,
       lookup_key: im.lookup_key ?? null,
+      gallery_label: im.gallery_label ?? null,
+      image_provenance: im.image_provenance ?? null,
+      visual_facet: im.visual_facet ?? null,
       description:
         desc.length > MAX_PERSISTED_IMAGE_DESC_CHARS
           ? `${desc.slice(0, MAX_PERSISTED_IMAGE_DESC_CHARS)}…`
@@ -105,6 +111,35 @@ function slimAircraftImagesForStorage(
     });
   }
   return out.length ? out : undefined;
+}
+
+/** Keep only visualization fields needed to re-render route maps after F5. */
+function slimDataUsedForStorage(du: DataUsed | null | undefined): DataUsed | undefined {
+  if (!du || typeof du !== "object") return undefined;
+  const rec = du as Record<string, unknown>;
+  const raw = rec.consultant_visualization_svg;
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+
+  const svgs: string[] = [];
+  let total = 0;
+  for (const item of raw.slice(0, MAX_PERSISTED_VIZ_SVG_BLOCKS)) {
+    if (typeof item !== "string" || !item.includes("<svg")) continue;
+    const trimmed = item.length > 6000 ? `${item.slice(0, 5997)}…` : item;
+    if (total + trimmed.length > MAX_PERSISTED_VIZ_SVG_TOTAL_CHARS) break;
+    svgs.push(trimmed);
+    total += trimmed.length;
+  }
+  if (!svgs.length) return undefined;
+
+  const out: DataUsed = {
+    consultant_visualization_svg: svgs,
+    consultant_visualization_rendered: 1,
+  };
+  const kind = rec.visualization_kind;
+  if (typeof kind === "string" && kind.trim()) {
+    out.visualization_kind = kind.trim();
+  }
+  return out;
 }
 
 /** Strip heavy fields and cap size before writing to localStorage (~5MB browser quota). */
@@ -115,6 +150,7 @@ function slimSessionsForStorage(list: SavedChatSession[]): SavedChatSession[] {
     updatedAt: s.updatedAt,
     messages: s.messages.slice(-MAX_PERSISTED_MESSAGES_PER_CHAT).map((m) => {
       const aircraft_images = slimAircraftImagesForStorage(m.aircraft_images);
+      const data_used = slimDataUsedForStorage(m.data_used);
       return {
         id: m.id,
         role: m.role,
@@ -123,6 +159,7 @@ function slimSessionsForStorage(list: SavedChatSession[]): SavedChatSession[] {
             ? `${m.content.slice(0, MAX_PERSISTED_CONTENT_CHARS)}…`
             : m.content,
         sources: m.sources?.slice(0, 24),
+        ...(data_used ? { data_used } : {}),
         ...(aircraft_images ? { aircraft_images } : {}),
       };
     }),
@@ -250,13 +287,23 @@ const WELCOME = `Hello — I'm HyeAero.AI, the aviation intelligence assistant f
 
 I can help with aircraft missions, specifications, ownership research, market insights, comparisons, and buyer advisory. What would you like to work on?`;
 
-function sourceLabel(src: string | undefined): string {
+function sourceLabel(src: string | undefined, im?: ConsultantAircraftImage): string {
+  const badge = (im?.gallery_label || "").trim();
+  if (badge) return badge;
   const s = (src || "").toLowerCase();
   if (s === "tavily") return "Web";
   if (s.startsWith("searchapi")) return "Web search";
   if (s === "scrape_gallery") return "Listing gallery";
+  if (s === "listing_scrape") return "Listing cabin";
   if (s === "listing_og") return "Listing preview";
   return src || "Image";
+}
+
+function gallerySectionLabel(im: ConsultantAircraftImage): string {
+  const gl = (im.gallery_label || "").trim();
+  if (gl) return gl;
+  if (im.source === "listing_scrape") return "Listing cabin (exact tail)";
+  return sourceLabel(im.source, im);
 }
 
 const SOURCE_SECTION_ORDER = ["tavily", "scrape_gallery", "listing_og"] as const;
@@ -412,6 +459,46 @@ function ImageTileGrid({
   );
 }
 
+function extractVisualizationSvgs(
+  dataUsed?: DataUsed | null,
+  content?: string
+): string[] {
+  const du = dataUsed as Record<string, unknown> | null | undefined;
+  const raw = du?.consultant_visualization_svg;
+  if (Array.isArray(raw) && raw.length > 0) {
+    const fromDu = raw.filter((s): s is string => typeof s === "string" && s.includes("<svg"));
+    if (fromDu.length) return fromDu;
+  }
+  if (content) {
+    const matches = content.match(/<svg[\s\S]*?<\/svg>/gi);
+    if (matches?.length) return matches;
+  }
+  return [];
+}
+
+/** Inline SVG range/map blocks from consultant visualization turns (server-generated SVG). */
+function ConsultantVisualizationBlock({
+  dataUsed,
+  content,
+}: {
+  dataUsed?: DataUsed | null;
+  content?: string;
+}) {
+  const svgs = extractVisualizationSvgs(dataUsed, content);
+  if (!svgs.length) return null;
+  return (
+    <div className="pl-1 mt-2 space-y-2" aria-label="Route visualization">
+      {svgs.map((svg, i) => (
+        <div
+          key={`viz-svg-${i}`}
+          className="rounded-lg border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-900/40 p-2 overflow-x-auto max-w-full [&_svg]:max-w-full [&_svg]:h-auto"
+          dangerouslySetInnerHTML={{ __html: svg }}
+        />
+      ))}
+    </div>
+  );
+}
+
 function AircraftImageGallery({ images }: { images: ConsultantAircraftImage[] }) {
   if (!images.length) return null;
   const grouped = groupImagesBySource(images);
@@ -423,15 +510,15 @@ function AircraftImageGallery({ images }: { images: ConsultantAircraftImage[] })
     if (!orderedKeys.includes(k)) orderedKeys.push(k);
   }
 
-  /** Single grid, no section labels — preserve tavily bucket order then other sources. */
-  const flat: ConsultantAircraftImage[] = [];
+  const labelGroups = new Map<string, ConsultantAircraftImage[]>();
   const seenUrl = new Set<string>();
-  const pushUnique = (arr: ConsultantAircraftImage[]) => {
+  const pushUnique = (label: string, arr: ConsultantAircraftImage[]) => {
     for (const im of arr) {
       const u = (im.url || "").trim();
       if (!u || seenUrl.has(u)) continue;
       seenUrl.add(u);
-      flat.push(im);
+      if (!labelGroups.has(label)) labelGroups.set(label, []);
+      labelGroups.get(label)!.push(im);
     }
   };
 
@@ -446,19 +533,61 @@ function AircraftImageGallery({ images }: { images: ConsultantAircraftImage[] })
       for (const im of section) {
         byBucket.get(tavilyImageBucket(im))!.push(im);
       }
-      for (const { key: bucketKey } of TAVILY_BUCKET_ORDER) {
-        pushUnique(byBucket.get(bucketKey) || []);
+      for (const { key: bucketKey, label: bucketLabel } of TAVILY_BUCKET_ORDER) {
+        const bucketItems = byBucket.get(bucketKey) || [];
+        if (!bucketItems.length) continue;
+        const hasProvenanceLabels = bucketItems.some((im) => (im.gallery_label || "").trim());
+        if (hasProvenanceLabels) {
+          for (const im of bucketItems) {
+            pushUnique(gallerySectionLabel(im), [im]);
+          }
+        } else {
+          pushUnique(bucketLabel, bucketItems);
+        }
       }
     } else {
-      pushUnique(section);
+      for (const im of section) {
+        pushUnique(gallerySectionLabel(im), [im]);
+      }
     }
   }
 
-  if (!flat.length) return null;
+  if (labelGroups.size === 0) return null;
+
+  const sectionOrder = [
+    "Listing cabin (exact tail)",
+    "Listing photo (exact tail)",
+    "Exact tail (cabin)",
+    "Exact tail (exterior)",
+    "Exact tail (photo)",
+    "Representative cabin (model)",
+    "Representative exterior (model)",
+    "Exterior views",
+    "Cabin & interior",
+  ];
+
+  const orderedLabels: string[] = [];
+  for (const pref of sectionOrder) {
+    if (labelGroups.has(pref)) orderedLabels.push(pref);
+  }
+  for (const k of labelGroups.keys()) {
+    if (!orderedLabels.includes(k)) orderedLabels.push(k);
+  }
 
   return (
-    <div className="pl-1 mt-3">
-      <ImageTileGrid items={flat} reactKeyPrefix="gallery" />
+    <div className="pl-1 mt-3 space-y-4">
+      {orderedLabels.map((label) => {
+        const items = labelGroups.get(label);
+        if (!items?.length) return null;
+        return (
+          <ImageTileGrid
+            key={label}
+            items={items}
+            reactKeyPrefix={`gallery-${label}`}
+            bucketLabel={labelGroups.size > 1 ? label : undefined}
+          />
+        );
+      })}
     </div>
   );
 }
@@ -508,6 +637,56 @@ function CopyAnswerButton({ text }: { text: string }) {
       )}
       {copied ? "Copied" : "Copy"}
     </button>
+  );
+}
+
+type MessageTextSegment = { text: string; bold: boolean };
+
+function parseBoldMarkdownSegments(line: string): MessageTextSegment[] {
+  const segments: MessageTextSegment[] = [];
+  const re = /\*\*([^*]+)\*\*/g;
+  let idx = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(line)) !== null) {
+    if (m.index > idx) {
+      segments.push({ text: line.slice(idx, m.index), bold: false });
+    }
+    segments.push({ text: m[1], bold: true });
+    idx = m.index + m[0].length;
+  }
+  if (idx < line.length) {
+    segments.push({ text: line.slice(idx), bold: false });
+  }
+  if (!segments.length) {
+    segments.push({ text: line, bold: false });
+  }
+  return segments;
+}
+
+/** Render consultant prose: ``**bold**`` → real bold (no raw asterisks in UI). */
+function ConsultantMessageContent({ content }: { content: string }) {
+  if (!content) return null;
+  const lines = content.split("\n");
+  return (
+    <span className="whitespace-pre-wrap">
+      {lines.map((line, lineIdx) => (
+        <span key={`ln-${lineIdx}`}>
+          {lineIdx > 0 ? "\n" : null}
+          {parseBoldMarkdownSegments(line).map((seg, segIdx) =>
+            seg.bold ? (
+              <strong
+                key={`seg-${lineIdx}-${segIdx}`}
+                className="font-semibold text-slate-900 dark:text-slate-50"
+              >
+                {seg.text}
+              </strong>
+            ) : (
+              <span key={`seg-${lineIdx}-${segIdx}`}>{seg.text}</span>
+            )
+          )}
+        </span>
+      ))}
+    </span>
   );
 }
 
@@ -564,10 +743,37 @@ function repairCorruptRouteLines(text: string): string {
     .join("\n");
 }
 
+/** Join soft line wraps so PDF copy does not glue words (e.g. MaintenanceTracking). */
+function normalizeContentForPdfExport(text: string): string {
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    let line = lines[i];
+    while (i + 1 < lines.length) {
+      const cur = line.trimEnd();
+      const nxt = lines[i + 1];
+      const nxtTrim = nxt.trim();
+      if (!cur || !nxtTrim) break;
+      if (/^[-•*]\s/.test(nxtTrim) || /^[-•*]\s/.test(cur.trim())) break;
+      if (/:\s*$/.test(cur) || /^[A-Z][^.!?]{0,48}:$/.test(cur.trim())) break;
+      if (/^[a-z(0-9]/.test(nxtTrim)) {
+        line = `${cur} ${nxtTrim}`;
+        i += 1;
+        continue;
+      }
+      break;
+    }
+    out.push(line);
+  }
+  return out.join("\n");
+}
+
 function sanitizeTextForPdf(text: unknown): string {
   let s = typeof text === "string" ? text : String(text ?? "");
+  s = normalizeContentForPdfExport(s);
   s = s.normalize("NFKC");
   s = s
+    .replace(/\u2022/g, "- ")
     .replace(/\u2192/g, "->")
     .replace(/[\u2013\u2014\u2212]/g, "-")
     .replace(/[\u2018\u2019]/g, "'")
@@ -582,17 +788,112 @@ function sanitizeTextForPdf(text: unknown): string {
   return repairCorruptRouteLines(s);
 }
 
-function wrapText(doc: jsPDF, text: string, x: number, y: number, maxWidth: number, lineHeight: number): number {
+const PDF_PAGE_BOTTOM_Y = 275;
+
+/** Strip markdown markers — chat UI keeps bold; PDF uses plain wrapped text only. */
+function stripMarkdownForPdf(text: string): string {
+  return text
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/\*([^*]+)\*/g, "$1")
+    .replace(/__([^_]+)__/g, "$1");
+}
+
+/** Remove embedded SVG (rendered separately) and normalize for PDF body text. */
+function prepareMessageContentForPdf(content: string): string {
+  let s = (content || "").replace(/<svg[\s\S]*?<\/svg>/gi, "").trim();
+  s = stripMarkdownForPdf(s);
+  s = normalizeContentForPdfExport(s);
+  return sanitizeTextForPdf(s);
+}
+
+function wrapText(
+  doc: jsPDF,
+  text: string,
+  x: number,
+  y: number,
+  maxWidth: number,
+  lineHeight: number,
+  ensureSpace?: (currentY: number) => number
+): number {
   const safe = sanitizeTextForPdf(text);
   if (!safe) return y;
+  doc.setFont("helvetica", "normal");
   const rawLines = doc.splitTextToSize(safe, maxWidth);
   const lines = Array.isArray(rawLines) ? rawLines.map((line) => String(line)) : [String(rawLines)];
   for (const line of lines) {
     if (!line) continue;
+    if (ensureSpace) {
+      y = ensureSpace(y);
+    } else if (y > PDF_PAGE_BOTTOM_Y) {
+      doc.addPage();
+      y = 20;
+    }
     doc.text(line, x, y);
     y += lineHeight;
   }
   return y;
+}
+
+function wrapMessageContentForPdf(
+  doc: jsPDF,
+  text: string,
+  x: number,
+  y: number,
+  maxWidth: number,
+  lineHeight: number,
+  ensureSpace: (currentY: number) => number
+): number {
+  const body = prepareMessageContentForPdf(text);
+  if (!body) return y;
+
+  doc.setFontSize(11);
+  doc.setFont("helvetica", "normal");
+
+  for (const rawLine of body.split("\n")) {
+    if (!rawLine.trim()) {
+      y = ensureSpace(y);
+      y += lineHeight * 0.45;
+      continue;
+    }
+    y = wrapText(doc, rawLine, x, y, maxWidth, lineHeight, ensureSpace);
+  }
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(11);
+  return y;
+}
+
+/** Rasterize inline SVG to PNG for jsPDF ``addImage``. */
+async function svgStringToPdfImageData(
+  svg: string
+): Promise<{ fmt: "PNG"; data: string } | null> {
+  const trimmed = svg.trim();
+  if (!trimmed.includes("<svg")) return null;
+  const blob = new Blob([trimmed], { type: "image/svg+xml;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error("svg"));
+      el.src = url;
+    });
+    const w = Math.max(240, img.naturalWidth || 240);
+    const h = Math.max(160, img.naturalHeight || 200);
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, w, h);
+    ctx.drawImage(img, 0, 0, w, h);
+    return { fmt: "PNG", data: canvas.toDataURL("image/png") };
+  } catch {
+    return null;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 type JsPdfWithLink = jsPDF & {
@@ -723,17 +1024,87 @@ async function downloadReport(messages: Message[]) {
   doc.text(sanitizeTextForPdf(`Generated: ${new Date().toLocaleString()}`), margin, y);
   y += lineHeight * 2;
   doc.setFontSize(11);
-  for (const m of reportMessages) {
-    if (y > 270) {
+  const ensureSpace = (currentY: number) => {
+    if (currentY > PDF_PAGE_BOTTOM_Y) {
       doc.addPage();
-      y = margin;
+      return margin;
     }
+    return currentY;
+  };
+
+  for (const m of reportMessages) {
+    y = ensureSpace(y);
     const label = m.role === "user" ? "You" : "Consultant";
     doc.setFont("helvetica", "bold");
     doc.text(sanitizeTextForPdf(label), margin, y);
     y += lineHeight;
     doc.setFont("helvetica", "normal");
-    y = wrapText(doc, m.content, margin, y, maxWidth, lineHeight) + lineHeight;
+    y = wrapMessageContentForPdf(doc, m.content, margin, y, maxWidth, lineHeight, ensureSpace) + lineHeight;
+
+    if (m.role === "assistant") {
+      const mapSvgs = extractVisualizationSvgs(m.data_used, m.content);
+      if (mapSvgs.length) {
+        y = ensureSpace(y);
+        y += lineHeight * 0.35;
+        doc.setFontSize(10);
+        doc.setFont("helvetica", "bold");
+        y = ensureSpace(y);
+        doc.text("Route map:", margin, y);
+        y += lineHeight;
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(11);
+        const mapW = Math.min(maxWidth, 130);
+        for (const svg of mapSvgs.slice(0, 2)) {
+          const loaded = await svgStringToPdfImageData(svg);
+          if (!loaded) {
+            doc.setFontSize(10);
+            y = wrapText(
+              doc,
+              "(Route map could not be embedded in PDF.)",
+              margin,
+              y,
+              maxWidth,
+              lineHeight * 0.85,
+              ensureSpace
+            );
+            doc.setFontSize(11);
+            continue;
+          }
+          let mapH = 55;
+          try {
+            const props = (
+              doc as unknown as { getImageProperties: (s: string) => { height: number; width: number } }
+            ).getImageProperties(loaded.data);
+            mapH = (mapW * props.height) / Math.max(props.width, 1);
+          } catch {
+            mapH = 55;
+          }
+          mapH = Math.min(mapH, 90);
+          if (y + mapH > 285) {
+            doc.addPage();
+            y = margin;
+          }
+          try {
+            doc.addImage(loaded.data, loaded.fmt, margin, y, mapW, mapH);
+            y += mapH + lineHeight * 0.5;
+          } catch {
+            doc.setFontSize(10);
+            y = wrapText(
+              doc,
+              "(Route map could not be embedded in PDF.)",
+              margin,
+              y,
+              maxWidth,
+              lineHeight * 0.85,
+              ensureSpace
+            );
+            doc.setFontSize(11);
+          }
+        }
+        y += lineHeight * 0.35;
+      }
+    }
+
     if (m.role === "assistant" && m.aircraft_images?.length) {
       y += lineHeight * 0.5;
       doc.setFont("helvetica", "bold");
@@ -746,7 +1117,7 @@ async function downloadReport(messages: Message[]) {
           doc.addPage();
           y = margin;
         }
-        const cap = `${sourceLabel(im.source)}${displayImageAlt(im.description) ? ` — ${displayImageAlt(im.description)}` : ""}`;
+        const cap = `${sourceLabel(im.source, im)}${displayImageAlt(im.description) ? ` — ${displayImageAlt(im.description)}` : ""}`;
         y = wrapText(doc, cap, margin, y, maxWidth, lineHeight * 0.85);
         const loaded = await imageUrlToPdfFormat(im.url);
         if (loaded) {
@@ -1330,11 +1701,11 @@ export default function Chat({ onQuerySent, suggestedQuery, onSuggestedQueryCons
                   <Bot className="w-4 h-4" />
                 </div>
                 <div className="max-w-[85%] space-y-1.5">
-                  <div className="rounded-2xl rounded-bl-md bg-white dark:bg-slate-800 px-5 py-3.5 text-slate-800 dark:text-slate-200 text-[15px] leading-relaxed shadow-sm border border-slate-100 dark:border-slate-600 whitespace-pre-wrap">
+                  <div className="rounded-2xl rounded-bl-md bg-white dark:bg-slate-800 px-5 py-3.5 text-slate-800 dark:text-slate-200 text-[15px] leading-relaxed shadow-sm border border-slate-100 dark:border-slate-600">
                     {!m.content && (m.streaming || m.status) ? (
                       <ConsultantLoadingIndicator status={m.status} />
                     ) : null}
-                    {m.content}
+                    {m.content ? <ConsultantMessageContent content={m.content} /> : null}
                     {m.streaming && m.content ? (
                       <span
                         className="inline-block w-0.5 h-4 ml-0.5 bg-accent align-middle animate-pulse rounded-sm"
@@ -1346,6 +1717,9 @@ export default function Chat({ onQuerySent, suggestedQuery, onSuggestedQueryCons
                     <div className="flex justify-start pl-0.5">
                       <CopyAnswerButton text={m.content} />
                     </div>
+                  ) : null}
+                  {!m.streaming ? (
+                    <ConsultantVisualizationBlock dataUsed={m.data_used} content={m.content} />
                   ) : null}
                   {!m.streaming && m.aircraft_images && m.aircraft_images.length > 0 ? (
                     <AircraftImageGallery images={m.aircraft_images} />

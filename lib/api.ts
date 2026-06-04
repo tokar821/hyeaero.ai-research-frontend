@@ -116,6 +116,10 @@ export type ConsultantAircraftImage = {
   description?: string | null;
   page_url?: string | null;
   lookup_key?: string | null;
+  /** UI badge: e.g. "Listing cabin (exact tail)" */
+  gallery_label?: string | null;
+  image_provenance?: string | null;
+  visual_facet?: string | null;
 };
 
 export type ConsultantChatResponse = {
@@ -165,12 +169,18 @@ export function parseConsultantAircraftImages(raw: unknown): ConsultantAircraftI
     const desc = (item as { description?: unknown }).description;
     const page = (item as { page_url?: unknown }).page_url;
     const lk = (item as { lookup_key?: unknown }).lookup_key;
+    const gl = (item as { gallery_label?: unknown }).gallery_label;
+    const prov = (item as { image_provenance?: unknown }).image_provenance;
+    const facet = (item as { visual_facet?: unknown }).visual_facet;
     out.push({
       url: u,
       source: typeof src === "string" ? src : undefined,
       description: typeof desc === "string" ? desc : desc === null ? null : undefined,
       page_url: typeof page === "string" ? page : page === null ? null : undefined,
       lookup_key: typeof lk === "string" ? lk : lk === null ? null : undefined,
+      gallery_label: typeof gl === "string" ? gl : gl === null ? null : undefined,
+      image_provenance: typeof prov === "string" ? prov : prov === null ? null : undefined,
+      visual_facet: typeof facet === "string" ? facet : facet === null ? null : undefined,
     });
   }
   return out;
