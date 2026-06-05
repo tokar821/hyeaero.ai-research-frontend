@@ -26,6 +26,14 @@ import {
   type ConsultantAircraftImage,
 } from "@/lib/api";
 import { authHeaderRecord } from "@/lib/auth-token";
+import {
+  commentaryBeyondSummary,
+  linesBeyondLeadIn,
+  comparisonBrokerUiHasContent,
+  comparisonBrokerUiPlainText,
+  parseComparisonBrokerUi,
+  type ComparisonBrokerUi,
+} from "@/lib/consultant-comparison-ui";
 import { useAuth } from "@/contexts/AuthContext";
 import { isStaffRole } from "@/lib/auth-api";
 
@@ -113,33 +121,39 @@ function slimAircraftImagesForStorage(
   return out.length ? out : undefined;
 }
 
-/** Keep only visualization fields needed to re-render route maps after F5. */
+/** Keep lightweight ``data_used`` fields needed to re-render route maps / comparison cards after F5. */
 function slimDataUsedForStorage(du: DataUsed | null | undefined): DataUsed | undefined {
   if (!du || typeof du !== "object") return undefined;
   const rec = du as Record<string, unknown>;
+  const out: DataUsed = {};
+
   const raw = rec.consultant_visualization_svg;
-  if (!Array.isArray(raw) || raw.length === 0) return undefined;
-
-  const svgs: string[] = [];
-  let total = 0;
-  for (const item of raw.slice(0, MAX_PERSISTED_VIZ_SVG_BLOCKS)) {
-    if (typeof item !== "string" || !item.includes("<svg")) continue;
-    const trimmed = item.length > 6000 ? `${item.slice(0, 5997)}…` : item;
-    if (total + trimmed.length > MAX_PERSISTED_VIZ_SVG_TOTAL_CHARS) break;
-    svgs.push(trimmed);
-    total += trimmed.length;
+  if (Array.isArray(raw) && raw.length > 0) {
+    const svgs: string[] = [];
+    let total = 0;
+    for (const item of raw.slice(0, MAX_PERSISTED_VIZ_SVG_BLOCKS)) {
+      if (typeof item !== "string" || !item.includes("<svg")) continue;
+      const trimmed = item.length > 6000 ? `${item.slice(0, 5997)}…` : item;
+      if (total + trimmed.length > MAX_PERSISTED_VIZ_SVG_TOTAL_CHARS) break;
+      svgs.push(trimmed);
+      total += trimmed.length;
+    }
+    if (svgs.length) {
+      out.consultant_visualization_svg = svgs;
+      out.consultant_visualization_rendered = 1;
+      const kind = rec.visualization_kind;
+      if (typeof kind === "string" && kind.trim()) {
+        out.visualization_kind = kind.trim();
+      }
+    }
   }
-  if (!svgs.length) return undefined;
 
-  const out: DataUsed = {
-    consultant_visualization_svg: svgs,
-    consultant_visualization_rendered: 1,
-  };
-  const kind = rec.visualization_kind;
-  if (typeof kind === "string" && kind.trim()) {
-    out.visualization_kind = kind.trim();
+  const compUi = parseComparisonBrokerUi(rec.comparison_broker_ui);
+  if (compUi) {
+    out.comparison_broker_ui = compUi;
   }
-  return out;
+
+  return Object.keys(out).length ? out : undefined;
 }
 
 /** Strip heavy fields and cap size before writing to localStorage (~5MB browser quota). */
@@ -474,6 +488,113 @@ function extractVisualizationSvgs(
     if (matches?.length) return matches;
   }
   return [];
+}
+
+/** Spec table + verdict for broker comparison turns (``data_used.comparison_broker_ui``). */
+function ConsultantComparisonBlock({ ui }: { ui: ComparisonBrokerUi }) {
+  const {
+    model_a,
+    model_b,
+    specs,
+    broker_notice,
+    commentary,
+    a_wins,
+    b_wins,
+    tradeoffs,
+    buy_a_if,
+    buy_b_if,
+  } = ui;
+  const extraTradeoffs = (tradeoffs ?? []).slice(1);
+
+  return (
+    <div className="pl-1 mt-2 space-y-3" aria-label={`${model_a} vs ${model_b} comparison`}>
+      {broker_notice ? (
+        <p className="text-sm text-amber-800 dark:text-amber-200/90 bg-amber-50/80 dark:bg-amber-950/30 border border-amber-200/80 dark:border-amber-800/50 rounded-lg px-3 py-2 leading-relaxed">
+          {broker_notice}
+        </p>
+      ) : null}
+
+      {commentaryBeyondSummary(commentary, ui.broker_summary || "").map((line) => (
+        <p key={line} className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed pl-0.5">
+          {line}
+        </p>
+      ))}
+
+      {specs.length > 0 ? (
+        <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-600">
+          <table className="w-full min-w-[280px] text-sm">
+            <thead>
+              <tr className="border-b border-slate-200 dark:border-slate-600 bg-slate-50/90 dark:bg-slate-900/50">
+                <th className="text-left py-2.5 px-3 font-medium text-slate-500 dark:text-slate-400 w-[38%]">
+                  Spec
+                </th>
+                <th className="text-left py-2.5 px-3 font-semibold text-slate-800 dark:text-slate-100">
+                  {model_a}
+                </th>
+                <th className="text-left py-2.5 px-3 font-semibold text-slate-800 dark:text-slate-100">
+                  {model_b}
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {specs.map((row) => (
+                <tr
+                  key={row.dimension}
+                  className="border-b border-slate-100 dark:border-slate-700/80 last:border-0"
+                >
+                  <td className="py-2 px-3 text-slate-600 dark:text-slate-400 align-top">{row.dimension}</td>
+                  <td className="py-2 px-3 text-slate-800 dark:text-slate-200 align-top">{row.a}</td>
+                  <td className="py-2 px-3 text-slate-800 dark:text-slate-200 align-top">{row.b}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+
+      {(a_wins?.length || b_wins?.length) ? (
+        <div className="grid gap-2 sm:grid-cols-2 text-sm">
+          {a_wins?.length ? (
+            <div className="rounded-lg border border-slate-200/80 dark:border-slate-600/80 px-3 py-2.5 bg-white/60 dark:bg-slate-800/40">
+              <p className="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-1">
+                {model_a}
+              </p>
+              <p className="text-slate-700 dark:text-slate-200 leading-snug">{a_wins.join(" · ")}</p>
+            </div>
+          ) : null}
+          {b_wins?.length ? (
+            <div className="rounded-lg border border-slate-200/80 dark:border-slate-600/80 px-3 py-2.5 bg-white/60 dark:bg-slate-800/40">
+              <p className="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-1">
+                {model_b}
+              </p>
+              <p className="text-slate-700 dark:text-slate-200 leading-snug">{b_wins.join(" · ")}</p>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {extraTradeoffs.map((t) => (
+        <p key={t} className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed pl-0.5">
+          {t}
+        </p>
+      ))}
+
+      {(buy_a_if || buy_b_if) ? (
+        <div className="space-y-1.5 text-sm text-slate-600 dark:text-slate-300 pl-0.5">
+          {buy_a_if ? (
+            <p>
+              <span className="font-medium text-slate-700 dark:text-slate-200">{model_a}:</span> {buy_a_if}
+            </p>
+          ) : null}
+          {buy_b_if ? (
+            <p>
+              <span className="font-medium text-slate-700 dark:text-slate-200">{model_b}:</span> {buy_b_if}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 /** Inline SVG range/map blocks from consultant visualization turns (server-generated SVG). */
@@ -1037,6 +1158,157 @@ async function imageUrlToPdfFormat(url: string): Promise<{ fmt: "JPEG" | "PNG"; 
   }
 }
 
+function pdfSplitLines(doc: jsPDF, text: string, maxWidth: number): string[] {
+  const safe = sanitizeTextForPdf(text);
+  if (!safe) return [];
+  const raw = doc.splitTextToSize(safe, maxWidth);
+  return Array.isArray(raw) ? raw.map((line) => String(line)) : [String(raw)];
+}
+
+/** Render comparison spec table + verdict panels (mirrors ``ConsultantComparisonBlock``). */
+function appendComparisonBrokerUiToPdf(
+  doc: jsPDF,
+  ui: ComparisonBrokerUi,
+  margin: number,
+  y: number,
+  maxWidth: number,
+  lineHeight: number,
+  ensureSpace: (currentY: number) => number,
+  bubbleText: string = ""
+): number {
+  if (!comparisonBrokerUiHasContent(ui)) return y;
+
+  y = ensureSpace(y);
+  y += lineHeight * 0.35;
+
+  if (ui.broker_notice) {
+    doc.setFontSize(9);
+    doc.setFont("helvetica", "italic");
+    y = wrapText(doc, ui.broker_notice, margin, y, maxWidth, lineHeight * 0.88, ensureSpace);
+    doc.setFont("helvetica", "normal");
+    y += lineHeight * 0.25;
+  }
+
+  const extraCommentary = commentaryBeyondSummary(
+    ui.commentary,
+    ui.broker_summary || bubbleText
+  );
+  for (const line of extraCommentary) {
+    doc.setFontSize(10);
+    y = wrapText(doc, line, margin, y, maxWidth, lineHeight * 0.9, ensureSpace);
+    y += lineHeight * 0.15;
+  }
+
+  if (ui.specs.length) {
+    doc.setFontSize(10);
+    doc.setFont("helvetica", "bold");
+    y = ensureSpace(y);
+    doc.text(sanitizeTextForPdf("Aircraft comparison:"), margin, y);
+    y += lineHeight;
+    doc.setFont("helvetica", "normal");
+    const colSpecW = maxWidth * 0.34;
+    const colValW = (maxWidth - colSpecW) / 2;
+    const xSpec = margin;
+    const xA = margin + colSpecW;
+    const xB = xA + colValW;
+    const cellPad = 1.5;
+    const rowLineH = lineHeight * 0.82;
+
+    const drawTableRow = (
+      dim: string,
+      valA: string,
+      valB: string,
+      bold: boolean
+    ): number => {
+      const linesDim = pdfSplitLines(doc, dim, colSpecW - cellPad * 2);
+      const linesA = pdfSplitLines(doc, valA, colValW - cellPad * 2);
+      const linesB = pdfSplitLines(doc, valB, colValW - cellPad * 2);
+      const rowLines = Math.max(linesDim.length, linesA.length, linesB.length, 1);
+      const rowH = rowLines * rowLineH + cellPad * 2;
+      y = ensureSpace(y);
+      if (y + rowH > 285) {
+        doc.addPage();
+        y = margin;
+      }
+      doc.setDrawColor(200, 200, 200);
+      doc.line(margin, y, margin + maxWidth, y);
+      doc.setFont("helvetica", bold ? "bold" : "normal");
+      doc.setFontSize(9);
+      let textY = y + cellPad + rowLineH * 0.75;
+      for (let i = 0; i < rowLines; i++) {
+        if (linesDim[i]) doc.text(linesDim[i], xSpec + cellPad, textY);
+        if (linesA[i]) doc.text(linesA[i], xA + cellPad, textY);
+        if (linesB[i]) doc.text(linesB[i], xB + cellPad, textY);
+        textY += rowLineH;
+      }
+      y += rowH;
+      return y;
+    };
+
+    y = drawTableRow("Spec", ui.model_a, ui.model_b, true);
+    for (const row of ui.specs) {
+      y = drawTableRow(row.dimension, row.a, row.b, false);
+    }
+    doc.line(margin, y, margin + maxWidth, y);
+    doc.setFontSize(11);
+    y += lineHeight * 0.45;
+  }
+
+  if (ui.a_wins?.length || ui.b_wins?.length) {
+    y = ensureSpace(y);
+    doc.setFontSize(9);
+    if (ui.a_wins?.length) {
+      doc.setFont("helvetica", "bold");
+      y = wrapText(doc, sanitizeTextForPdf(ui.model_a.toUpperCase()), margin, y, maxWidth, rowLineHFrom(lineHeight), ensureSpace);
+      doc.setFont("helvetica", "normal");
+      y = wrapText(doc, ui.a_wins.join(" · "), margin, y, maxWidth, rowLineHFrom(lineHeight), ensureSpace);
+      y += lineHeight * 0.2;
+    }
+    if (ui.b_wins?.length) {
+      doc.setFont("helvetica", "bold");
+      y = wrapText(doc, sanitizeTextForPdf(ui.model_b.toUpperCase()), margin, y, maxWidth, rowLineHFrom(lineHeight), ensureSpace);
+      doc.setFont("helvetica", "normal");
+      y = wrapText(doc, ui.b_wins.join(" · "), margin, y, maxWidth, rowLineHFrom(lineHeight), ensureSpace);
+    }
+    doc.setFontSize(11);
+    y += lineHeight * 0.25;
+  }
+
+  const leadIn = ui.broker_summary || bubbleText;
+  for (const t of linesBeyondLeadIn(ui.tradeoffs, leadIn)) {
+    y = wrapText(doc, t, margin, y, maxWidth, lineHeight * 0.9, ensureSpace);
+    y += lineHeight * 0.15;
+  }
+  if (ui.buy_a_if) {
+    y = wrapText(
+      doc,
+      `${ui.model_a}: ${ui.buy_a_if}`,
+      margin,
+      y,
+      maxWidth,
+      lineHeight * 0.9,
+      ensureSpace
+    );
+  }
+  if (ui.buy_b_if) {
+    y = wrapText(
+      doc,
+      `${ui.model_b}: ${ui.buy_b_if}`,
+      margin,
+      y,
+      maxWidth,
+      lineHeight * 0.9,
+      ensureSpace
+    );
+  }
+
+  return y + lineHeight * 0.35;
+}
+
+function rowLineHFrom(lineHeight: number): number {
+  return lineHeight * 0.85;
+}
+
 async function downloadReport(messages: Message[]) {
   const doc = new jsPDF({ format: "a4", unit: "mm" });
   const margin = 20;
@@ -1044,9 +1316,16 @@ async function downloadReport(messages: Message[]) {
   const maxWidth = pageWidth - margin * 2;
   let y = margin;
   const lineHeight = 6;
-  const reportMessages = messages.filter(
-    (m) => !m.streaming && m.id !== "0" && sanitizeTextForPdf(m.content).length > 0
-  );
+  const reportMessages = messages.filter((m) => {
+    if (m.streaming || m.id === "0") return false;
+    if (sanitizeTextForPdf(m.content).length > 0) return true;
+    if (m.role !== "assistant") return false;
+    return comparisonBrokerUiHasContent(
+      parseComparisonBrokerUi(
+        (m.data_used as Record<string, unknown> | null | undefined)?.comparison_broker_ui
+      )
+    );
+  });
   doc.setFontSize(16);
   doc.text(sanitizeTextForPdf("HyeAero.AI - Research Chat Report"), margin, y);
   y += 10;
@@ -1072,6 +1351,22 @@ async function downloadReport(messages: Message[]) {
     y = wrapMessageContentForPdf(doc, m.content, margin, y, maxWidth, lineHeight, ensureSpace) + lineHeight;
 
     if (m.role === "assistant") {
+      const comparisonUi = parseComparisonBrokerUi(
+        (m.data_used as Record<string, unknown> | null | undefined)?.comparison_broker_ui
+      );
+      if (comparisonUi) {
+        y = appendComparisonBrokerUiToPdf(
+          doc,
+          comparisonUi,
+          margin,
+          y,
+          maxWidth,
+          lineHeight,
+          ensureSpace,
+          m.content
+        );
+      }
+
       const mapSvgs = extractVisualizationSvgs(m.data_used, m.content);
       if (mapSvgs.length) {
         y = ensureSpace(y);
@@ -1737,36 +2032,52 @@ export default function Chat({ onQuerySent, suggestedQuery, onSuggestedQueryCons
                 </div>
               </div>
             ) : (
-              <div key={m.id} className="flex gap-3">
-                <div className="w-8 h-8 rounded-full bg-accent flex-shrink-0 flex items-center justify-center text-white" aria-hidden>
-                  <Bot className="w-4 h-4" />
-                </div>
-                <div className="max-w-[85%] space-y-1.5">
-                  <div className="rounded-2xl rounded-bl-md bg-white dark:bg-slate-800 px-5 py-3.5 text-slate-800 dark:text-slate-200 text-[15px] leading-relaxed shadow-sm border border-slate-100 dark:border-slate-600">
-                    {!m.content && (m.streaming || m.status) ? (
-                      <ConsultantLoadingIndicator status={m.status} />
-                    ) : null}
-                    {m.content ? <ConsultantMessageContent content={m.content} /> : null}
-                    {m.streaming && m.content ? (
-                      <span
-                        className="inline-block w-0.5 h-4 ml-0.5 bg-accent align-middle animate-pulse rounded-sm"
-                        aria-hidden
-                      />
-                    ) : null}
-                  </div>
-                  {!m.streaming && m.content.trim() ? (
-                    <div className="flex justify-start pl-0.5">
-                      <CopyAnswerButton text={m.content} />
+              (() => {
+                const comparisonUi = parseComparisonBrokerUi(
+                  (m.data_used as Record<string, unknown> | null | undefined)?.comparison_broker_ui
+                );
+                const copyText =
+                  comparisonUi && m.content.trim()
+                    ? `${m.content.trim()}\n\n${comparisonBrokerUiPlainText(comparisonUi)}`
+                    : comparisonUi
+                      ? comparisonBrokerUiPlainText(comparisonUi)
+                      : m.content;
+                return (
+                  <div key={m.id} className="flex gap-3">
+                    <div className="w-8 h-8 rounded-full bg-accent flex-shrink-0 flex items-center justify-center text-white" aria-hidden>
+                      <Bot className="w-4 h-4" />
                     </div>
-                  ) : null}
-                  {!m.streaming ? (
-                    <ConsultantVisualizationBlock dataUsed={m.data_used} content={m.content} />
-                  ) : null}
-                  {!m.streaming && m.aircraft_images && m.aircraft_images.length > 0 ? (
-                    <AircraftImageGallery images={m.aircraft_images} />
-                  ) : null}
-                </div>
-              </div>
+                    <div className="max-w-[85%] space-y-1.5">
+                      <div className="rounded-2xl rounded-bl-md bg-white dark:bg-slate-800 px-5 py-3.5 text-slate-800 dark:text-slate-200 text-[15px] leading-relaxed shadow-sm border border-slate-100 dark:border-slate-600">
+                        {!m.content && (m.streaming || m.status) ? (
+                          <ConsultantLoadingIndicator status={m.status} />
+                        ) : null}
+                        {m.content ? <ConsultantMessageContent content={m.content} /> : null}
+                        {m.streaming && m.content ? (
+                          <span
+                            className="inline-block w-0.5 h-4 ml-0.5 bg-accent align-middle animate-pulse rounded-sm"
+                            aria-hidden
+                          />
+                        ) : null}
+                      </div>
+                      {!m.streaming && copyText.trim() ? (
+                        <div className="flex justify-start pl-0.5">
+                          <CopyAnswerButton text={copyText} />
+                        </div>
+                      ) : null}
+                      {!m.streaming && comparisonUi ? (
+                        <ConsultantComparisonBlock ui={comparisonUi} />
+                      ) : null}
+                      {!m.streaming ? (
+                        <ConsultantVisualizationBlock dataUsed={m.data_used} content={m.content} />
+                      ) : null}
+                      {!m.streaming && m.aircraft_images && m.aircraft_images.length > 0 ? (
+                        <AircraftImageGallery images={m.aircraft_images} />
+                      ) : null}
+                    </div>
+                  </div>
+                );
+              })()
             )
           )}
           {isLoading && !messages.some((m) => m.streaming) && (
