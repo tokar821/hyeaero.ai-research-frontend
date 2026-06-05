@@ -727,6 +727,36 @@ function ConsultantLoadingIndicator({
   );
 }
 
+/** Fallback when the stream ends with no assistant text (backend recovery should still run). */
+function emptyStreamFallback(userQuery: string): string {
+  const q = (userQuery || "").toLowerCase();
+  if (/\bvs\.?\b|\bversus\b/.test(q)) {
+    return (
+      "I couldn't complete the comparison on that pass. Resend the same versus question " +
+      "and I'll return the full broker comparison."
+    );
+  }
+  if (/\bliquidity\b/.test(q)) {
+    return (
+      "I couldn't finish the liquidity ranking on that pass. Resend the segment liquidity " +
+      "question with the models listed."
+    );
+  }
+  if (/\b(?:verify|before\s+making\s+an\s+offer|first\s+thing)\b/.test(q)) {
+    return (
+      "I couldn't finish the pre-offer checklist on that pass. Resend with model, year, " +
+      "and ask price."
+    );
+  }
+  if (/\b(?:passengers?|pax|nonstop)\b/.test(q) && /\bto\b/.test(q)) {
+    return (
+      "I hit a formatting fault on the last pass, but I can still size the mission. " +
+      "Restate the city pair, passengers, and any nonstop requirement and I will rebuild the advisory."
+    );
+  }
+  return "I couldn't produce a complete answer on that pass. Please resend the same question.";
+}
+
 /**
  * jsPDF standard fonts only support WinAnsi reliably — normalize Unicode and ensure plain strings.
  */
@@ -1418,20 +1448,31 @@ export default function Chat({ onQuerySent, suggestedQuery, onSuggestedQueryCons
               parseConsultantAircraftImages(payload.aircraft_images),
               duRec ? parseConsultantAircraftImages(duRec.aircraft_images) : []
             );
-            const aiOut = ai.length > 0 ? ai : undefined;
+            const showGallery = Boolean(
+              duRec?.consultant_show_image_ui_context ||
+                duRec?.consultant_user_asked_photos
+            );
+            const aiOut = showGallery && ai.length > 0 ? ai : undefined;
             const err = payload.error;
             setMessages((prev) =>
               prev.map((m) => {
                 if (m.id !== assistantId) return m;
                 let content = m.content || "";
+                const governed = typeof payload.answer === "string" ? payload.answer.trim() : "";
+                const guardApplied = Boolean(
+                  duRec?.broker_query_guard_applied || duRec?.broker_guard_stream_shortcircuit
+                );
+                if (governed) {
+                  content = governed;
+                } else if (guardApplied && !content.trim()) {
+                  content = emptyStreamFallback(text);
+                }
                 if (err && !content.trim()) {
                   content = err;
                 } else if (err && content.trim()) {
                   content = `${content}\n\n(${err})`;
                 } else if (!content.trim() && !err) {
-                  content =
-                    "I hit a formatting fault on the last pass, but I can still size the mission. " +
-                    "Restate the city pair, passengers, and any nonstop requirement and I will rebuild the advisory.";
+                  content = emptyStreamFallback(text);
                 }
                 return {
                   ...m,

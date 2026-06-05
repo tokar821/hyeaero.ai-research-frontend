@@ -273,6 +273,8 @@ export async function getConsultantQuota(): Promise<ConsultantQuota> {
 }
 
 export type StreamDonePayload = {
+  /** Final governed answer — replaces streamed draft when present. */
+  answer?: string;
   sources?: unknown[];
   data_used?: Record<string, unknown> | null;
   /** Same items as ``data_used.aircraft_images`` when present. */
@@ -386,6 +388,7 @@ export async function postRagAnswerStream(
             const fromDu = du && typeof du === "object" ? parseConsultantAircraftImages(du.aircraft_images) : [];
             const merged = mergeConsultantAircraftImageLists(fromPayload, fromDu);
             options.onDone({
+              answer: typeof (ev as { answer?: unknown }).answer === "string" ? (ev as { answer: string }).answer : undefined,
               sources: ev.sources,
               data_used: du,
               aircraft_images: merged,
